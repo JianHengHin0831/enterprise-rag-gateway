@@ -7,13 +7,14 @@ BASE = dict(
     prompt_version=1,
     rewrite_prompt_version=1,
     index_version=7,
-    query="报销流程是什么？",
+    query="What is the expense process?",
 )
 
 
 def test_normalization_merges_trivial_variants():
-    assert build_cache_key(**BASE) == build_cache_key(**{**BASE, "query": "  报销流程是什么? "})
-    assert normalize_query("Wi-Fi  密码！") == "wi-fi 密码"
+    variant = "  what is the  EXPENSE process?? "
+    assert build_cache_key(**BASE) == build_cache_key(**{**BASE, "query": variant})
+    assert normalize_query("Wi-Fi  Password!") == "wi-fi password"
 
 
 def test_every_dimension_changes_key():
@@ -24,7 +25,7 @@ def test_every_dimension_changes_key():
         ("prompt_version", 2),
         ("rewrite_prompt_version", 2),
         ("index_version", 8),
-        ("query", "绩效考核"),
+        ("query", "performance review"),
     ]:
         assert build_cache_key(**{**BASE, field: value}) != base, field
 

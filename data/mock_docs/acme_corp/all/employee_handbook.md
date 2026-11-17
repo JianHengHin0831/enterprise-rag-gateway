@@ -2,20 +2,20 @@
 doc_id: acme_handbook
 tenant_id: acme_corp
 allowed_roles: [all]
-title: Acme 员工手册（2026 版）
+title: Acme Employee Handbook (2026 edition)
 ---
-# Acme 员工手册
+# Acme Employee Handbook
 
-## 工作时间
+## Working hours
 
-公司实行弹性工作制，核心工作时间为 10:00–16:00，每日工作满 8 小时即可。每周三为"无会议日"，原则上不安排内部会议。
+Acme uses flexible working hours. Core hours are 10:00-16:00, and employees work 8 hours per day. Wednesday is "no-meeting day": internal meetings are not scheduled on Wednesdays.
 
-## 假期
+## Leave
 
-正式员工入职满一年后享有 10 天带薪年假，此后每满一年增加 1 天，上限 15 天。实习生不享有带薪年假，但可申请每月 1 天的事假。
+Full-time employees get 10 days of paid annual leave after their first year, plus 1 day for each additional year, up to 15 days. Interns do not get paid annual leave but may request 1 day of personal leave per month.
 
-病假需在当天 10:00 前通过 OA 系统提交，连续病假超过 2 天需补交医院证明。
+Sick leave must be submitted in the HR portal before 10:00 on the same day. Sick leave longer than 2 consecutive days requires a doctor's note.
 
-## 办公网络
+## Office network
 
-办公 Wi-Fi 名称为 ACME-Office，密码每季度更换，在 OA 首页"IT 公告"栏查看。访客请连接 ACME-Guest，无需密码但限速 10 Mbps。
+The office Wi-Fi network is ACME-Office. Its password changes every quarter and is posted in the "IT Notices" section of the HR portal home page. Visitors should use ACME-Guest, which has no password and is limited to 10 Mbps.

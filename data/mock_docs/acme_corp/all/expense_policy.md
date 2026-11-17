@@ -2,20 +2,20 @@
 doc_id: acme_expense
 tenant_id: acme_corp
 allowed_roles: [all]
-title: Acme 报销流程
+title: Acme Expense Reimbursement Process
 ---
-# 报销流程
+# Expense reimbursement
 
-## 提交时限
+## Deadline
 
-所有费用须在发生后 30 天内通过 OA 系统"费用报销"模块提交，逾期不予受理。
+All expenses must be submitted through the "Expense Claims" module of the HR portal within 30 days of being incurred. Late claims are not accepted.
 
-## 审批链
+## Approval chain
 
-- 单笔 2000 元以下：直属经理审批。
-- 单笔 2000 元（含）至 10000 元：直属经理 + 部门总监审批。
-- 单笔 10000 元以上：额外需要财务 VP 审批。
+- A single expense under 2,000 USD: approved by the direct manager.
+- A single expense from 2,000 USD (inclusive) to 10,000 USD: direct manager + department director.
+- A single expense above 10,000 USD: additionally requires the Finance VP.
 
-## 差旅标准
+## Travel allowance
 
-国内出差住宿标准为一线城市每晚 600 元、其他城市每晚 400 元；餐补每天 100 元，无需发票。
+Domestic travel hotel limits are 200 USD per night in tier-1 cities and 140 USD per night elsewhere. The meal allowance is 40 USD per day and needs no receipt.

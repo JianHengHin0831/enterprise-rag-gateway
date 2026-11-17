@@ -16,7 +16,7 @@ import unicodedata
 from app.schemas import ChatResponse
 
 _WS = re.compile(r"\s+")
-_TRAILING_PUNCT = re.compile(r"[\s?？!！。.,，]+$")
+_TRAILING_PUNCT = re.compile(r"[\s?!.,]+$")
 
 
 def normalize_query(query: str) -> str:

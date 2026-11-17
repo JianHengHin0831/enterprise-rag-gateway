@@ -5,7 +5,10 @@ from dataclasses import dataclass
 
 _CITATION = re.compile(r"\[(\d{1,3})\]")
 
-DISCLAIMER = "\n\n（提示：部分引用编号无法对应到检索资料，请核实后再使用。）"
+DISCLAIMER = (
+    "\n\n(Note: some citation numbers do not match any retrieved source. "
+    "Please verify before relying on this answer.)"
+)
 
 
 @dataclass(frozen=True)

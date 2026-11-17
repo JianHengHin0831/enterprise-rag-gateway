@@ -2,18 +2,18 @@
 doc_id: beta_handbook
 tenant_id: beta_inc
 allowed_roles: [all]
-title: Beta 员工手册
+title: Beta Employee Handbook
 ---
-# Beta 员工手册
+# Beta employee handbook
 
-## 工作时间
+## Working hours
 
-Beta 实行固定工作制，工作时间为 09:00–18:00，午休 12:00–13:00。
+Beta uses fixed working hours: 09:00-18:00, with a lunch break from 12:00 to 13:00.
 
-## 报销
+## Expenses
 
-所有费用须在发生后 15 天内提交，单笔 5000 元以上需要 CEO 审批。
+All expenses must be submitted within 15 days. A single expense above 5,000 USD requires CEO approval.
 
-## 年假
+## Annual leave
 
-入职即享有 5 天带薪年假。
+Employees get 5 days of paid annual leave from their first day.

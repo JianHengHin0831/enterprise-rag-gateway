@@ -27,7 +27,7 @@ def test_role_header_is_ignored(client):
     """Spoofed identity headers must not authenticate anyone."""
     r = client.post(
         "/v1/chat",
-        json={"query": "薪资"},
+        json={"query": "salary bands"},
         headers={"X-Tenant-ID": "acme_corp", "X-User-Role": "hr"},
     )
     assert r.status_code == 401
@@ -36,7 +36,7 @@ def test_role_header_is_ignored(client):
 def test_chat_with_token_reaches_pipeline(client, make_token):
     r = client.post(
         "/v1/chat",
-        json={"query": "报销流程"},
+        json={"query": "expense process"},
         headers={"Authorization": f"Bearer {make_token()}"},
     )
     assert r.status_code == 501  # TODO(M1): expect 200 once the pipeline exists

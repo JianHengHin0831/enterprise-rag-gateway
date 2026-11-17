@@ -2,29 +2,29 @@
 doc_id: acme_hr_compensation
 tenant_id: acme_corp
 allowed_roles: [hr]
-title: 薪酬结构与绩效考核标准（机密）
+title: Compensation Structure and Performance Review Standards (Confidential)
 ---
-# 薪酬结构与绩效考核标准
+# Compensation structure and performance review standards
 
-> 机密文件，仅限 HR 查阅。以下人员信息均为虚构测试数据。
+> Confidential, HR only. All personal data below is fictional test data.
 
-## 职级薪资带宽（月薪，税前）
+## Salary bands by level (monthly, pre-tax, USD)
 
-| 职级 | 下限 | 上限 |
+| Level | Min | Max |
 |---|---|---|
-| P5 | 18000 | 26000 |
-| P6 | 25000 | 38000 |
-| P7 | 36000 | 55000 |
+| P5 | 6000 | 8600 |
+| P6 | 8300 | 12600 |
+| P7 | 12000 | 18300 |
 
-## 绩效考核
+## Performance reviews
 
-绩效分为 S / A / B / C 四档，强制分布比例为 10% / 30% / 50% / 10%。连续两个季度为 C 的员工进入绩效改进计划（PIP）。
+Ratings have four tiers, S / A / B / C, with a forced distribution of 10% / 30% / 50% / 10%. Employees rated C for two consecutive quarters enter a Performance Improvement Plan (PIP).
 
-## 裁员补偿
+## Severance
 
-经济补偿按 N+1 执行，N 为在职年限（满 6 个月按 1 年计）。
+Severance follows N+1, where N is years of service (6 months or more counts as a full year).
 
-## HR 联系人（虚构）
+## HR contacts (fictional)
 
-- 张三（HRBP，研发线）：手机 13800138000，邮箱 zhangsan.hr@acme.example，身份证 110101199001011234
-- 李四（薪酬专员）：手机 13900139000，邮箱 lisi.comp@acme.example
+- Alex Zhang (HRBP, engineering): mobile 13800138000, email alex.zhang.hr@acme.example, ID number 110101199001011234
+- Sam Li (compensation specialist): mobile 13900139000, email sam.li.comp@acme.example

@@ -2,18 +2,18 @@
 doc_id: acme_eng_architecture
 tenant_id: acme_corp
 allowed_roles: [eng]
-title: 核心系统架构说明 v2
+title: Core System Architecture v2
 ---
-# 核心系统架构说明 v2
+# Core system architecture v2
 
-## 服务拆分
+## Services
 
-订单服务（order-svc）、支付服务（pay-svc）、用户服务（user-svc）通过内部 gRPC 通信，对外统一经 API 网关暴露 REST 接口。
+The order service (order-svc), payment service (pay-svc) and user service (user-svc) talk to each other over internal gRPC. Externally they are exposed as REST through the API gateway.
 
-## 数据存储
+## Data storage
 
-订单与支付使用 PostgreSQL 16 主从集群，读写分离；用户画像存储在 ClickHouse。缓存层使用 Redis Cluster，Key 统一以服务名为前缀。
+Orders and payments use a PostgreSQL 16 primary/replica cluster with read/write splitting. User profiles are stored in ClickHouse. The cache layer is a Redis Cluster, and every key is prefixed with the service name.
 
-## 发版规范
+## Release policy
 
-生产发版窗口为每周二、周四 14:00–17:00，必须先经过 staging 环境 24 小时观察。错误码 E-4031 表示支付回调签名校验失败，需检查 pay-svc 的密钥轮换状态。
+Production releases happen on Tuesdays and Thursdays, 14:00-17:00, after at least 24 hours of observation in staging. Error code E-4031 means the payment callback signature check failed; check the key rotation status of pay-svc.

@@ -31,6 +31,7 @@ Local Python is 3.11+ (Docker image uses 3.12). Windows venv paths shown; on Lin
 
 ## Conventions
 
+- **English only.** All code, comments, docstrings, strings, prompts, mock data, eval data and docs are written in English — not a single Chinese character anywhere in the repo. Enforced by `tests/test_english_only.py`.
 - Python 3.11+ syntax, full type hints, Pydantic v2 models for all API and cross-module data (`app/schemas.py`).
 - Async everywhere on the request path; one shared `httpx.AsyncClient` created in the FastAPI lifespan.
 - Config: `app/config.py` (env vars prefixed `RAG_`), model/routing in `configs/models.yaml`, prompts versioned in `configs/prompts/<name>_v<N>.yaml`. Changing prompt text = new version file, never edit an old one.

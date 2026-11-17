@@ -30,7 +30,7 @@ def test_answer_prompt_renders_with_nonce_tag():
     system = p.render_system(doc_tag="doc_abcd1234")
     assert "<doc_abcd1234>" in system and p.refusal_text in system
     assert "{" not in system
-    assert "问题：q" in p.render_user(documents="d", query="q")
+    assert "Question: q" in p.render_user(documents="d", query="q")
 
 
 def test_mock_corpus_parses_and_flags_malicious_docs():
@@ -38,6 +38,6 @@ def test_mock_corpus_parses_and_flags_malicious_docs():
     tenants = {c.tenant_id for c in chunks}
     assert tenants == {"acme_corp", "beta_inc"}
     flagged_docs = {c.doc_id for c in chunks if c.suspicious_patterns}
-    assert "acme_pantry_guide" in flagged_docs
+    assert flagged_docs == {"acme_pantry_guide", "beta_it_faq"}  # no false positives
     # HR docs are never public
     assert all(c.allowed_roles == ["hr"] for c in chunks if c.doc_id.startswith("acme_hr_"))

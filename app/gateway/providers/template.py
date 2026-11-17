@@ -5,7 +5,10 @@ from collections.abc import AsyncIterator
 
 from app.gateway.base import BaseLLMProvider, ChatMessage, LLMResponse, StreamChunk, Usage
 
-FALLBACK_TEXT = "服务繁忙，暂时无法生成回答，请稍后重试。如需紧急帮助请联系对应部门。"
+FALLBACK_TEXT = (
+    "The service is busy and cannot generate an answer right now. Please try again later, "
+    "or contact the relevant department if it is urgent."
+)
 
 
 class TemplateProvider(BaseLLMProvider):

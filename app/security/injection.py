@@ -17,17 +17,18 @@ from app.schemas import RetrievedChunk
 _TAG_LIKE = re.compile(r"<\s*/?\s*(?:retrieved_doc|doc_[0-9a-f]+)\b[^>]*>", re.IGNORECASE)
 
 _SUSPICIOUS_PATTERNS: dict[str, re.Pattern[str]] = {
-    "ignore_instructions_zh": re.compile(r"忽略.{0,6}(指令|指示|规则|要求)"),
-    "ignore_instructions_en": re.compile(
-        r"ignore\s+(all\s+)?(the\s+)?(previous|above|prior)\s+(instructions|rules)", re.I
+    "ignore_instructions": re.compile(
+        r"(ignore|disregard|forget)\s+(all\s+)?(the\s+)?(previous|above|prior|earlier)\s+"
+        r"(instructions|rules|prompts?)",
+        re.I,
     ),
-    "role_override_zh": re.compile(r"你现在(是|扮演)|从现在开始你"),
-    "role_override_en": re.compile(r"you\s+are\s+now\b|act\s+as\s+(a|an)\b", re.I),
-    # Requires an exfiltration verb near the secret; a bare mention ("密钥轮换") is benign.
+    "role_override": re.compile(
+        r"you\s+are\s+now\b|act\s+as\s+(a|an)\b|from\s+now\s+on,?\s+you\b", re.I
+    ),
+    # Requires an exfiltration verb near the secret; a bare mention ("key rotation") is benign.
     "secret_exfil": re.compile(
-        r"(输出|打印|泄露|告诉|发给|reveal|print|output|show).{0,20}"
-        r"(api[\s_-]?key|密钥|system\s*prompt|系统提示词)"
-        r"|(api[\s_-]?key|密钥|system\s*prompt|系统提示词).{0,20}(输出|打印|泄露|发给)",
+        r"\b(reveal|print|output|show|leak|send|dump)\b.{0,30}"
+        r"(api[\s_-]?keys?|secret\s+keys?|system\s*prompt|passwords?)",
         re.I,
     ),
     "fake_tag": _TAG_LIKE,

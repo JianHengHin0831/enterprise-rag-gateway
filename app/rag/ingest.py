@@ -6,7 +6,7 @@ Doc format (data/mock_docs/<tenant>/<access>/*.md):
     doc_id: acme_handbook
     tenant_id: acme_corp
     allowed_roles: [all]
-    title: 员工手册
+    title: Employee Handbook
     ---
     # body...
 
