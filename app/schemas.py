@@ -26,6 +26,19 @@ class Identity(BaseModel):
     user_id: str
 
 
+class DevTokenRequest(BaseModel):
+    """Dev-only persona switch for the demo UI (simulates the upstream SSO)."""
+
+    tenant_id: str = Field(min_length=1, max_length=64)
+    role: Role
+    user_id: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+class DevTokenResponse(BaseModel):
+    token: str
+    expires_in: int
+
+
 class ChatTurn(BaseModel):
     role: str = Field(pattern="^(user|assistant)$")
     content: str = Field(max_length=4000)

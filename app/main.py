@@ -1,21 +1,27 @@
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import timedelta
+from pathlib import Path
 from typing import Annotated
 
 import httpx
-from fastapi import Depends, FastAPI, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.observability.logging import configure_logging, log_event
 from app.observability.trace import current_trace_id, start_trace
-from app.schemas import ChatRequest, Identity
-from app.security.auth import get_identity
+from app.schemas import ChatRequest, DevTokenRequest, DevTokenResponse, Identity
+from app.security.auth import get_identity, issue_token
 from app.security.injection import screen_text
 
 logger = logging.getLogger("rag.api")
+
+WEB_DIR = Path(__file__).parent / "web"
+DEV_TOKEN_TTL = timedelta(hours=1)
 
 
 @asynccontextmanager
@@ -36,6 +42,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Enterprise RAG Gateway", version="0.1.0", lifespan=lifespan)
+app.mount("/ui", StaticFiles(directory=WEB_DIR, html=True), name="ui")
 
 
 @app.middleware("http")
@@ -46,6 +53,41 @@ async def trace_middleware(
     response = await call_next(request)
     response.headers["X-Trace-ID"] = trace_id
     return response
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse(url="/ui/")
+
+
+@app.post("/dev/token", include_in_schema=False)
+async def dev_token(
+    body: DevTokenRequest, settings: Annotated[Settings, Depends(get_settings)]
+) -> DevTokenResponse:
+    """Mint a short-lived JWT for the demo UI. Exists only when RAG_ENV=dev.
+
+    The token still goes through the normal `get_identity` verification on every request;
+    this route only stands in for the upstream SSO that would issue it in production.
+    """
+    if settings.env != "dev":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
+    if body.tenant_id not in settings.known_tenants:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown tenant")
+    log_event(
+        logger,
+        "dev_token_issued",
+        tenant_id=body.tenant_id,
+        role=body.role.value,
+        user_id=body.user_id,
+    )
+    token = issue_token(
+        tenant_id=body.tenant_id,
+        role=body.role,
+        user_id=body.user_id,
+        settings=settings,
+        ttl=DEV_TOKEN_TTL,
+    )
+    return DevTokenResponse(token=token, expires_in=int(DEV_TOKEN_TTL.total_seconds()))
 
 
 @app.get("/health")

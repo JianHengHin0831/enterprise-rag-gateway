@@ -53,6 +53,11 @@ python -m venv .venv
 .venv/Scripts/uvicorn app.main:app --reload --port 8000
 ```
 
+Open the demo console at <http://localhost:8000/> (served from `app/web/`). Pick a tenant and
+role, sign in, and ask questions; switch personas to show access control. Persona tokens come from
+the dev-only `POST /dev/token` route, which returns 404 unless `RAG_ENV=dev` - set `RAG_ENV=prod`
+anywhere the demo is exposed publicly. You can also paste a token minted by the script below.
+
 Mint a test identity and call the API:
 
 ```bash

@@ -41,3 +41,37 @@ def test_chat_with_token_reaches_pipeline(client, make_token):
     )
     assert r.status_code == 501  # TODO(M1): expect 200 once the pipeline exists
     assert r.json()["trace_id"] == r.headers["X-Trace-ID"]
+
+
+def test_ui_is_served(client):
+    r = client.get("/", follow_redirects=True)
+    assert r.status_code == 200
+    assert "RAG Gateway Console" in r.text
+
+
+def test_dev_token_is_verified_like_any_other(client):
+    r = client.post(
+        "/dev/token", json={"tenant_id": "beta_inc", "role": "eng", "user_id": "u_eng_7"}
+    )
+    assert r.status_code == 200
+    token = r.json()["token"]
+    chat = client.post(
+        "/v1/chat", json={"query": "hi"}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert chat.status_code == 501  # authenticated; TODO(M1): expect 200
+
+
+def test_dev_token_rejects_unknown_tenant(client):
+    r = client.post("/dev/token", json={"tenant_id": "evil", "role": "hr", "user_id": "u1"})
+    assert r.status_code == 400
+
+
+def test_dev_token_disabled_outside_dev(settings):
+    prod = settings.model_copy(update={"env": "prod"})
+    app.dependency_overrides[get_settings] = lambda: prod
+    try:
+        with TestClient(app) as c:
+            r = c.post("/dev/token", json={"tenant_id": "acme_corp", "role": "hr", "user_id": "u1"})
+        assert r.status_code == 404
+    finally:
+        app.dependency_overrides.clear()

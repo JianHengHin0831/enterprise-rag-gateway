@@ -45,7 +45,7 @@ def decode_token(token: str, settings: Settings) -> Identity:
 def issue_token(
     *, tenant_id: str, role: Role, user_id: str, settings: Settings, ttl: timedelta
 ) -> str:
-    """Dev/test helper. Not exposed over HTTP."""
+    """Dev/test helper. Exposed over HTTP only by the dev-only `/dev/token` route."""
     now = datetime.now(UTC)
     claims = {
         "sub": user_id,

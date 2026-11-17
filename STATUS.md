@@ -6,6 +6,7 @@
 ## Done
 - M0 skeleton: pure-logic modules (auth / ACL filter / sanitizer / trace / circuit breaker / cache key / citations / injection wrapping / pricing / prompt loader) implemented with unit tests.
 - Whole repository is English-only (code, comments, data, prompts, docs).
+- Demo console UI at `/ui/` (persona switcher via dev-only `/dev/token`, health/ready panel, chat with citation and status badges).
 
 ## In progress
 - (none)
