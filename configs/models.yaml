@@ -1,0 +1,75 @@
+# Model registry, routing chains, pricing, resilience settings.
+# Prices are USD per 1M tokens. They are null on purpose: fill in from the provider's
+# current official price page. cost_usd is reported as null while a price is null.
+
+providers:
+  anthropic:
+    type: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: RAG_ANTHROPIC_API_KEY
+  dashscope:
+    type: openai_compat
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: RAG_DASHSCOPE_API_KEY
+  local:
+    type: template  # no network: returns a fixed safe answer
+
+models:
+  claude-sonnet:
+    provider: anthropic
+    model: claude-sonnet-5-5
+    input_per_mtok: null
+    output_per_mtok: null
+    timeout_s: 30
+    max_output_tokens: 1024
+  claude-haiku:
+    provider: anthropic
+    model: claude-haiku-5-5
+    input_per_mtok: null
+    output_per_mtok: null
+    timeout_s: 10
+    max_output_tokens: 256
+  qwen-plus:
+    provider: dashscope
+    model: qwen-plus
+    input_per_mtok: null
+    output_per_mtok: null
+    timeout_s: 30
+    max_output_tokens: 1024
+  qwen-turbo:
+    provider: dashscope
+    model: qwen-turbo
+    input_per_mtok: null
+    output_per_mtok: null
+    timeout_s: 8
+    max_output_tokens: 256
+  fallback-template:
+    provider: local
+    model: fallback-template
+    input_per_mtok: 0
+    output_per_mtok: 0
+    timeout_s: 1
+    max_output_tokens: 0
+
+# Ordered fallback chains per task. First entry = primary; anything after it => degraded=true.
+routes:
+  rewrite: [qwen-turbo, claude-haiku]
+  answer: [claude-sonnet, qwen-plus, fallback-template]
+
+circuit_breaker:
+  failure_threshold: 5
+  recovery_timeout_s: 30
+  half_open_max_calls: 2
+
+retry:
+  max_attempts: 3          # per model, before moving down the chain
+  base_delay_s: 0.5
+  max_delay_s: 4.0
+  jitter: full
+  request_deadline_s: 15   # total budget across all retries + fallbacks
+
+budget:
+  daily_tokens_per_tenant:
+    acme_corp: 2000000
+    beta_inc: 500000
+  on_exceeded: downgrade   # reject | downgrade (route answer -> rewrite-tier model)
