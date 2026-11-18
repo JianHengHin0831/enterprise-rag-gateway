@@ -10,6 +10,8 @@ class Role(StrEnum):
     EMPLOYEE = "employee"
     ENG = "eng"
     HR = "hr"
+    SALES = "sales"
+    FINANCE = "finance"
 
 
 # Documents visible to every role in the tenant carry this value in `allowed_roles`.
