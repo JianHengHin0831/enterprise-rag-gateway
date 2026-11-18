@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,6 +20,15 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "kb_chunks"
     redis_url: str = "redis://localhost:6379/0"
+
+    # Embeddings (app/rag/embeddings.py)
+    embedder: Literal["bge-m3", "fake"] = "bge-m3"
+    embed_model_name: str = "BAAI/bge-m3"
+    embed_device: str | None = None  # e.g. "cpu", "cuda:0"; None = FlagEmbedding default
+    embed_use_fp16: bool = False  # True only on GPU
+    embed_batch_size: int = 16
+    embed_max_length: int = 512
+    fake_embed_dim: int = 64
 
     # Config files
     models_config_path: Path = Path("configs/models.yaml")

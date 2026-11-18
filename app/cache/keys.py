@@ -25,6 +25,11 @@ def normalize_query(query: str) -> str:
     return _TRAILING_PUNCT.sub("", q)
 
 
+def index_version_key(tenant_id: str) -> str:
+    """Redis key holding a tenant's current index_version (written by ingest, read by cache)."""
+    return f"index_version:{tenant_id}"
+
+
 def build_cache_key(
     *,
     tenant_id: str,

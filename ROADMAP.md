@@ -26,10 +26,10 @@ Unfinished code is marked `TODO(Mx)`; acceptance tests for future milestones are
 
 Goal: ingest docs with `tenant_id / allowed_roles`; `/v1/chat` runs the minimal "retrieve → answer" path (non-streaming, single model for now).
 
-- [ ] Grow mock docs to 15–20 (acme_corp + beta_inc, all / eng / hr, including 2 malicious injection docs)
-- [ ] `app/rag/embeddings.py`: integrate bge-m3 (dense + sparse; local FlagEmbedding or an API)
-- [ ] `app/rag/ingest.py`: chunk → embed → upsert, payload includes `tenant_id / allowed_roles / doc_id / chunk_index / index_version`; mark `suspicious` with `screen_text` at ingest
-- [ ] Qdrant collection: named vectors `dense` + `sparse`, payload indexes on `tenant_id` and `allowed_roles`
+- [x] Grow mock docs to 15–20 (acme_corp + beta_inc, all / eng / hr, including 2 malicious injection docs)
+- [x] `app/rag/embeddings.py`: integrate bge-m3 (dense + sparse; local FlagEmbedding or an API)
+- [x] `app/rag/ingest.py`: chunk → embed → upsert, payload includes `tenant_id / allowed_roles / doc_id / chunk_index / index_version`; mark `suspicious` with `screen_text` at ingest
+- [x] Qdrant collection: named vectors `dense` + `sparse`, payload indexes on `tenant_id` and `allowed_roles`
 - [ ] `app/rag/retriever.py`: Query API `prefetch(dense, sparse)` + RRF fusion, **ACL filter on every prefetch**
 - [ ] Non-streaming `chat()` for one OpenAI-compatible provider (via the router, never direct)
 - [ ] `/v1/chat` wires up: auth → trace → retrieve → wrap docs → generate → return `answer + citations + trace_id`
