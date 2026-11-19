@@ -9,7 +9,12 @@ from typing import Annotated
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
@@ -22,14 +27,23 @@ from app.cost.budget import BudgetExceededError, BudgetGuard
 from app.gateway.base import AllModelsFailedError, LLMError
 from app.gateway.factory import build_providers
 from app.gateway.router import ModelRouter, load_models_config
+from app.observability import metrics
 from app.observability.logging import configure_logging, log_event
 from app.observability.trace import current_trace_id, start_trace
 from app.rag.embeddings import Embedder, build_embedder
 from app.rag.pipeline import RagPipeline, StreamEvent
 from app.rag.prompts import load_prompt
+from app.rag.reranker import Reranker, build_reranker
 from app.rag.retriever import HybridRetriever
 from app.rag.rewrite import QueryRewriter
-from app.schemas import ChatRequest, ChatResponse, DevTokenRequest, DevTokenResponse, Identity
+from app.schemas import (
+    ChatRequest,
+    ChatResponse,
+    DevTokenRequest,
+    DevTokenResponse,
+    Identity,
+    RetrievedChunk,
+)
 from app.security.auth import get_identity, issue_token
 from app.security.injection import screen_text
 
@@ -52,6 +66,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # No network on construction; /ready reports whether Qdrant is reachable.
     app.state.qdrant = AsyncQdrantClient(url=settings.qdrant_url, check_compatibility=False)
     embedder = build_embedder(settings)
+    reranker = build_reranker(settings)
     router = ModelRouter(
         config=(models_config := load_models_config(settings.models_config_path)),
         providers=build_providers(models_config, settings, app.state.http),
@@ -63,6 +78,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         prompt=load_prompt(settings.prompts_dir, "rag_qa", settings.answer_prompt_version),
         retrieve_top_k=settings.retrieve_top_k,
         context_top_n=settings.rerank_top_n,
+        reranker=reranker,
+        rerank_threshold=settings.rerank_threshold,
         budget=budget,
         cache=LayeredCache(
             app.state.redis,
@@ -80,7 +97,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ),
     )
     # Load the embedding model in the background so the first request does not pay for it.
-    warmup = asyncio.create_task(_warm_up(embedder))
+    warmup = asyncio.create_task(_warm_up(embedder, reranker))
     try:
         yield
     finally:
@@ -90,12 +107,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await app.state.redis.aclose()
 
 
-async def _warm_up(embedder: Embedder) -> None:
+async def _warm_up(embedder: Embedder, reranker: Reranker) -> None:
     try:
         await embedder.embed(["warm-up"])
         log_event(logger, "embedder_ready", dense_dim=embedder.dense_dim)
     except Exception as exc:  # noqa: BLE001 - surfaced on the first real request too
         log_event(logger, "embedder_warmup_failed", level=logging.ERROR, error=str(exc))
+    try:
+        await reranker.rerank("warm-up", [_WARMUP_CHUNK], top_n=1)
+        log_event(logger, "reranker_ready", reranker=reranker.name)
+    except Exception as exc:  # noqa: BLE001 - surfaced on the first real request too
+        log_event(logger, "reranker_warmup_failed", level=logging.ERROR, error=str(exc))
+
+
+_WARMUP_CHUNK = RetrievedChunk(doc_id="warm-up", chunk_index=0, text="warm-up")
 
 
 def get_pipeline(request: Request) -> RagPipeline:
@@ -149,6 +174,11 @@ async def dev_token(
         ttl=DEV_TOKEN_TTL,
     )
     return DevTokenResponse(token=token, expires_in=int(DEV_TOKEN_TTL.total_seconds()))
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics_endpoint() -> PlainTextResponse:
+    return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")
 
 
 @app.get("/health")

@@ -8,7 +8,7 @@ Order (each step inside a `Span`):
   5. wrap_documents + render prompt
   6. budget.reserve(estimate)                     -> 429 / downgrade        (M2)
   7. router.chat / router.open_stream ("answer")                            (M1/M2)
-  8. check_citations -> disclaimer on mismatch                            (M3)
+  8. check_citations on the full text -> disclaimer + metric on mismatch   (M3)
   9. budget.settle; should_cache -> cache.set; audit; rag_request_summary  (M2/M3)
 
 (`screen_text(query)` runs in the API layer before the pipeline.)
@@ -22,8 +22,15 @@ Caching: only single-turn requests, or multi-turn ones whose rewrite succeeded, 
 cacheable (a raw follow-up like "and for interns?" means nothing on its own). Cache hits are
 returned with `cache_hit=True`, `cost_usd=0`.
 
-Until the reranker exists (M3), the first `context_top_n` fused hits go to the LLM, and an
-empty retrieval result is refused without an LLM call.
+Rerank + gate: the `retrieve_top_k` fused hits are reranked and the best `context_top_n` kept.
+If the top rerank score is below `rerank_threshold` (or nothing was retrieved) the fixed
+refusal text is returned without an LLM call. Low-score refusals are not cached, so a
+recalibrated threshold takes effect at once. Without a reranker the first `context_top_n`
+fused hits go to the LLM (no gate).
+
+Citations: the check runs on the complete answer (for streams: after the last delta). On a
+mismatch the DISCLAIMER is appended (streams get it as one extra `delta`), the metric
+`rag_citation_mismatch_total` is incremented and the answer is never cached.
 """
 
 import logging
@@ -38,10 +45,12 @@ from app.cost.pricing import compute_cost_usd
 from app.cost.tokens import estimate_messages_tokens
 from app.gateway.base import ChatMessage, Usage
 from app.gateway.router import ModelRouter, Task
+from app.observability import metrics
 from app.observability.logging import log_event
 from app.observability.trace import Span, current_trace_id, steps_ms
-from app.rag.citations import check_citations
+from app.rag.citations import DISCLAIMER, check_citations
 from app.rag.prompts import PromptTemplate
+from app.rag.reranker import Reranker, passes_gate
 from app.rag.rewrite import QueryRewriter, RewriteResult
 from app.schemas import ChatRequest, ChatResponse, Citation, Identity, RetrievedChunk
 from app.security.injection import wrap_documents
@@ -72,6 +81,7 @@ class _Plan:
     task: Task = "answer"
     downgraded: bool = False
     reservation: Reservation | None = None
+    refusal_reason: Literal["no_results", "low_score"] | None = None
 
 
 class RagPipeline:
@@ -86,6 +96,8 @@ class RagPipeline:
         budget: BudgetGuard | None = None,
         cache: LayeredCache | None = None,
         rewriter: QueryRewriter | None = None,
+        reranker: Reranker | None = None,
+        rerank_threshold: float = 0.0,
     ) -> None:
         self._retriever = retriever
         self._router = router
@@ -95,6 +107,8 @@ class RagPipeline:
         self._budget = budget
         self._cache = cache
         self._rewriter = rewriter
+        self._reranker = reranker
+        self._rerank_threshold = rerank_threshold
 
     @property
     def refusal_text(self) -> str:
@@ -160,6 +174,10 @@ class RagPipeline:
             await self._settle(plan, usage.prompt_tokens + usage.completion_tokens)
             settled = True
             response = self._build(plan, "".join(parts), routed.model_key, routed.degraded, usage)
+            if response.citation_mismatch:
+                # The deltas are already out; send the disclaimer so the client's text
+                # ends the same way as the `done` answer.
+                yield StreamEvent("delta", {"text": DISCLAIMER})
             await self._store(plan, response)
             yield StreamEvent("done", self._finish(identity, plan, response).model_dump())
         finally:
@@ -205,13 +223,26 @@ class RagPipeline:
             span.set("retrieved_doc_ids", sorted({h.doc_id for h in hits}))
             span.set("suspicious_hits", sum(h.suspicious for h in hits))
 
-        plan.contexts = hits[: self._context_top_n]
-        if not plan.contexts:
-            plan.response = ChatResponse(
-                trace_id=_tid(), answer=self.refusal_text, refused=True, cost_usd=0.0
-            )
-            await self._store(plan, plan.response)
+        if not hits:
+            await self._refuse(plan, "no_results")
             return plan
+
+        if self._reranker is None:
+            plan.contexts = hits[: self._context_top_n]
+        else:
+            async with Span("rerank", reranker=self._reranker.name, candidates=len(hits)) as span:
+                ranked = await self._reranker.rerank(query, hits, self._context_top_n)
+                passed = passes_gate(ranked, self._rerank_threshold)
+                top = ranked[0].rerank_score if ranked else None
+                span.set("top_score", None if top is None else round(top, 4))
+                span.set("threshold", self._rerank_threshold)
+                span.set("passed", passed)
+                span.set("context_refs", [c.ref for c in ranked])
+            metrics.inc("rag_rerank_gate_total", decision="passed" if passed else "refused")
+            if not passed:
+                await self._refuse(plan, "low_score")
+                return plan
+            plan.contexts = ranked
 
         wrapped = wrap_documents(plan.contexts)
         plan.messages = [
@@ -223,6 +254,16 @@ class RagPipeline:
         ]
         await self._reserve(plan, identity)
         return plan
+
+    async def _refuse(self, plan: _Plan, reason: Literal["no_results", "low_score"]) -> None:
+        """Fixed refusal without an LLM call."""
+        plan.refusal_reason = reason
+        plan.response = ChatResponse(
+            trace_id=_tid(), answer=self.refusal_text, refused=True, cost_usd=0.0
+        )
+        metrics.inc("rag_refusals_total", reason=reason)
+        if reason == "no_results":  # deterministic per index_version; low_score depends on
+            await self._store(plan, plan.response)  # the threshold, which is not in the key
 
     async def _reserve(self, plan: _Plan, identity: Identity) -> None:
         if self._budget is None:
@@ -277,7 +318,20 @@ class RagPipeline:
             if n not in check.invalid
         ]
         refused = bool(self.refusal_text) and self.refusal_text in text
-        # TODO(M3): append DISCLAIMER and record the metric on citation_mismatch.
+        mismatch = check.mismatch and not refused
+        if refused:
+            metrics.inc("rag_refusals_total", reason="model")
+        if mismatch:
+            text += DISCLAIMER
+            metrics.inc("rag_citation_mismatch_total")
+            log_event(
+                logger,
+                "citation_mismatch",
+                level=logging.WARNING,
+                invalid=list(check.invalid),
+                num_contexts=len(contexts),
+                model_used=model_key,
+            )
         return ChatResponse(
             trace_id=_tid(),
             answer=text,
@@ -285,7 +339,7 @@ class RagPipeline:
             refused=refused,
             model_used=model_key,
             degraded=degraded or plan.downgraded,
-            citation_mismatch=check.mismatch,
+            citation_mismatch=mismatch,
             cost_usd=compute_cost_usd(usage, self._router.spec(model_key)),
         )
 
@@ -297,6 +351,7 @@ class RagPipeline:
             role=identity.role.value,
             user_id=identity.user_id,
             refused=response.refused,
+            refusal_reason=plan.refusal_reason,
             cache_hit=response.cache_hit,
             rewritten=plan.rewrite.rewritten,
             model_used=response.model_used,

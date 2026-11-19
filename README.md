@@ -92,6 +92,54 @@ tests/               unit tests + FakeLLM integration tests (future-milestone ac
 
 ---
 
+## Refusal threshold calibration (M3)
+
+The low-score gate refuses with a fixed text, without calling the LLM, when the reranker's top-1
+score is below `RAG_RERANK_THRESHOLD`. The threshold is only meaningful for the reranker it was
+calibrated on, so it is set by sweeping the golden set through the real path (verified JWT →
+ACL-filtered hybrid retrieval Top-20 → `BAAI/bge-reranker-v2-m3` Top-5), with no LLM involved:
+
+```bash
+.venv/Scripts/python -m evals.sweep_threshold --svg docs/threshold_curve.svg   # ~15-30 min on CPU
+.venv/Scripts/python -m evals.sweep_threshold --from-report evals/reports/threshold_sweep.json
+```
+
+![Threshold vs gate accuracy, answer recall, refusal recall and refusal rate](docs/threshold_curve.svg)
+
+51 golden cases: 32 should be answered, 19 should be refused (`expect_refusal`). *Answer recall* =
+should-answer cases that pass the gate; *refusal recall* = should-refuse cases the gate refuses on
+its own; *gate accuracy* = correct gate decisions over all cases.
+
+| Threshold | Answer recall | Refusal recall | Gate accuracy | Refusal rate (all) |
+|---|---|---|---|---|
+| 0.00 | 100.0% | 0.0% | 62.7% | 0.0% |
+| 0.01 | 96.9% | 63.2% | 84.3% | 25.5% |
+| 0.02 | 96.9% | 73.7% | 88.2% | 29.4% |
+| **0.03 (chosen)** | **96.9%** | **78.9%** | **90.2%** | **31.4%** |
+| 0.05 | 93.8% | 84.2% | 90.2% | 35.3% |
+| 0.10 | 75.0% | 89.5% | 80.4% | 49.0% |
+| 0.35 (old placeholder) | 50.0% | 94.7% | 66.7% | 66.7% |
+| 0.50 | 46.9% | 94.7% | 64.7% | 68.6% |
+
+**Chosen: 0.03.** Rule: highest gate accuracy among thresholds keeping answer recall ≥ 95%, middle
+of the best plateau. A blocked answer cannot be recovered, while weak context that passes the gate is
+still refused by the LLM (prompt rule), so the gate is tuned to rarely block.
+
+What the sweep showed:
+- Unauthorized, cross-tenant and most no-answer questions score ≤ 0.022 (ACL filtering leaves only
+  unrelated chunks), while answerable ones mostly score ≥ 0.04. The gap sits around 0.03.
+- Cross-encoder scores fall sharply for multi-part questions (one chunk rarely answers all parts):
+  "What is the expense submission deadline and the domestic meal allowance?" scores 0.07-0.10
+  although the right document ranks first. The old 0.35 placeholder would have refused half of
+  the answerable questions.
+- The gate cannot catch everything: N-05 (on-call rotation, 0.29) and the prompt-injection
+  question E-06 (0.80) pass, and are left to the LLM's refusal rule and the injection defenses.
+  The single answerable case below 0.03 is the false-premise P-01 ("deploy with Helm"), where a
+  refusal is an acceptable outcome.
+- After reranking, the expected document is in the Top-5 for 32/32 cases that name one.
+
+---
+
 ## Design trade-offs (interview cheat sheet)
 
 - **Why not trust an `X-User-Role` header?** Clients can forge it. Identity only comes from a verified JWT (issued by an upstream SSO/gateway in production); the ACL filter is derived only from that identity, and LLM rewrite output can never influence it.
@@ -101,7 +149,8 @@ tests/               unit tests + FakeLLM integration tests (future-milestone ac
 - **Why only fall back before the first streamed token?** Sent tokens cannot be recalled; switching models mid-answer stitches together two styles and possibly contradictory content.
 - **Why reserve budget up front?** "Check, then spend" overshoots under concurrency.
 - **Why is breaker state not shared across processes?** A demo trade-off: per-worker breakers still protect the downstream; sharing needs Redis and adds a new failure point.
-- **How is the refusal threshold chosen?** Score distributions differ between rerankers, so the threshold is calibrated by sweeping the golden set (see the M3 threshold curve).
+- **How is the refusal threshold chosen?** Score distributions differ between rerankers, so the threshold is calibrated by sweeping the golden set (see [Refusal threshold calibration](#refusal-threshold-calibration-m3)). It favours answer recall: the LLM can still refuse weak context, but nothing recovers a wrongly blocked answer.
+- **Why rerank on the full chunk instead of trusting RRF scores?** RRF scores are rank-based and not comparable across queries, so they cannot drive an absolute refusal threshold; a cross-encoder score can.
 
 ---
 

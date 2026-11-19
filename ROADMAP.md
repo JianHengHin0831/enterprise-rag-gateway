@@ -61,10 +61,10 @@ Goal: ingest docs with `tenant_id / allowed_roles`; `/v1/chat` runs the minimal 
 
 ## M3 · Anti-hallucination + security audit (days 7–9)
 
-- [ ] Rerank (external API or local bge-reranker), Top-20 → Top-5
-- [ ] Low-score refusal gate: Top-1 score < threshold → fixed refusal, no LLM call
-- [ ] **Calibrate the threshold by sweeping the golden set** (threshold vs accuracy/refusal-rate curve), add it to the README
-- [ ] After streaming ends, run the citation check on the full text; on `citation_mismatch=true` append a disclaimer and record the metric
+- [x] Rerank (external API or local bge-reranker), Top-20 → Top-5
+- [x] Low-score refusal gate: Top-1 score < threshold → fixed refusal, no LLM call
+- [x] **Calibrate the threshold by sweeping the golden set** (threshold vs accuracy/refusal-rate curve), add it to the README
+- [x] After streaming ends, run the citation check on the full text; on `citation_mismatch=true` append a disclaimer and record the metric
 - [ ] Audit log: `who / tenant / role / query_hash / retrieved_doc_ids / decision / ts` (append-only JSONL)
 - [ ] `rag_request_summary` event: `steps_ms`, `model_used`, `degraded`, `prompt/completion tokens`, `estimated vs actual`, `cost_usd`
 - [ ] Optional: LangFuse integration

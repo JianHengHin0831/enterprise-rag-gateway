@@ -46,10 +46,13 @@ class Settings(BaseSettings):
     answer_prompt_version: int = 1
     rewrite_prompt_version: int = 1
 
-    # Retrieval / anti-hallucination
+    # Retrieval / anti-hallucination. The threshold is in the reranker's native score scale
+    # and only valid for the reranker it was calibrated on (`python -m evals.sweep_threshold`).
     retrieve_top_k: int = 20
+    reranker: Literal["bge-reranker", "fake"] = "bge-reranker"
+    rerank_model_name: str = "BAAI/bge-reranker-v2-m3"
     rerank_top_n: int = 5
-    rerank_threshold: float = 0.35  # TODO(M3): calibrate with golden set
+    rerank_threshold: float = 0.03  # bge-reranker-v2-m3, golden-set sweep 2026-11-19
 
     # Cache
     l1_cache_size: int = 500

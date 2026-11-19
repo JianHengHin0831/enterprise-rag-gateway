@@ -38,20 +38,30 @@
   - Tests: `tests/test_streaming.py`, `tests/test_m2_pipeline.py` (cache, budget incl. 20 concurrent requests at the limit, downgrade, rewrite, SSE route), cache acceptance in `tests/test_router_fallback.py`.
 - OpenRouter as the default provider: `configs/models.yaml` routes all four remote models through `openrouter` (OpenAI-compatible adapter, one key `RAG_OPENROUTER_API_KEY`; OpenRouter prices filled in). `qwen-turbo` maps to `qwen/qwen3.8-flash` (OpenRouter has no qwen-turbo). The `rewrite` route is `[claude-haiku, qwen-turbo]` (haiku measured ~1.0 s p50 vs ~2.8 s for qwen3.8-flash with `scripts/bench_rewrite.py`); `RAG_REWRITE_TIMEOUT_S` default raised to 6 s. Upstream errors reported inside a 200 body or mid-stream (`error` object / `finish_reason: "error"`) are now classified instead of passing as a truncated answer. Router / pipeline tests keep the direct-vendor layout via `tests/conftest.py::direct_vendor_models_config`.
 
+- M3 items 1–4 (rerank, low-score gate, threshold calibration, post-stream citation check):
+  - `app/rag/reranker.py`: `BgeReranker` (`BAAI/bge-reranker-v2-m3` cross-encoder through `transformers`, sigmoid scores in [0, 1], same scores as FlagEmbedding's `FlagReranker` at ~40% less CPU time; lazy load, worker thread + lock, shortest-first batching) and deterministic `FakeReranker` (lexical overlap); selected by `RAG_RERANKER` (`bge-reranker` | `fake`), warmed up in the lifespan next to the embedder.
+  - Pipeline: the Top-20 fused hits (`RAG_RETRIEVE_TOP_K`) are reranked to Top-5 (`RAG_RERANK_TOP_N`) inside a `rerank` span (`top_score`, `threshold`, `passed`, `context_refs`). Top-1 < `RAG_RERANK_THRESHOLD` -> fixed refusal text, `cost_usd=0`, no `budget` / `llm` span, `refusal_reason=low_score` on the `chat_response` log. Low-score refusals are not cached (the threshold is not part of the cache key); empty-retrieval refusals still are.
+  - Calibration: `python -m evals.sweep_threshold` (mint + verify a JWT per golden case, real ACL hybrid retrieval + reranker, no LLM) writes `evals/reports/threshold_sweep.json` and `docs/threshold_curve.svg`; `--from-report` re-sweeps saved scores. Result on 51 cases: **threshold 0.03** (was a 0.35 placeholder) -> answer recall 96.9% (31/32), gate refusal recall 78.9% (15/19), gate accuracy 90.2%; the old 0.35 would have refused 50% of answerable questions. Expected doc in the reranked Top-5: 32/32. Curve, table and findings in README "Refusal threshold calibration (M3)".
+  - Citations: the check runs on the full answer text (streams: after the last delta, so a `[9]` split across deltas is still caught). On a mismatch (and not a refusal) `DISCLAIMER` is appended — streamed as one extra `delta` before `done` so client text matches the final answer — the invalid `[n]` is dropped from `citations`, a `citation_mismatch` warning is logged and `rag_citation_mismatch_total` incremented; `should_cache` keeps it out of the cache.
+  - Metrics: `app/observability/metrics.py` in-process counters (fixed-enum labels only) at `GET /metrics` (Prometheus text): `rag_citation_mismatch_total`, `rag_refusals_total{reason=low_score|no_results|model}`, `rag_rerank_gate_total{decision=passed|refused}`.
+  - Tests: `tests/test_m3_rerank_citations.py` (incl. the M3 acceptance "no-answer question -> low-score refusal, no `llm` span"), `tests/test_threshold_sweep.py`. Test settings pin `reranker="fake"` so the app lifespan never loads the model.
+  - Verified 2026-11-19: `pytest tests/` 244 passed, `ruff check .` clean, golden-set dry run valid; live on the full stack (bge-m3 + bge-reranker + OpenRouter): N-01 and C-01 refused with steps `cache_lookup, retrieve, rerank` only and cost 0; A-01 answered by claude-sonnet citing `acme_expense`; SSE (E-03 VPN question) streamed meta -> 57 deltas -> done with no URL from the injection doc; `/metrics` counted 2 low-score refusals and 1 pass.
+
 ## In progress
 - (none)
 
 ## Next
-- M3: reranker + low-score refusal gate (calibrated on the golden set), post-stream citation check with disclaimer, audit log, `rag_request_summary` event.
+- M3 items 5–7: audit log (`decision` incl. `refused_low_score`), `rag_request_summary` event, optional LangFuse; second M3 acceptance (injection doc retrieved -> no payload in output, no tag escape).
 
 ## Known gaps
 - Claude Sonnet / Haiku 5.5 think adaptively by default and thinking tokens count toward `max_tokens`; with `max_output_tokens: 1024` / `256` a long thought could truncate the answer. The adapter sends no `thinking` / effort setting yet; revisit if answers come back cut off (`finish_reason == "max_tokens"`).
 - Content refusals are raised (502), not routed to another model.
-- No reranker / low-score gate yet (M3): the first 5 fused hits go to the LLM; only an empty retrieval is refused without an LLM call.
+- **Rerank latency on CPU**: `bge-reranker-v2-m3` (568M params) takes ~7–14 s for 20 pairs on this laptop CPU (i5-12450H), which dominates uncached request latency (the LLM takes ~2 s). Options: a GPU (~0.1 s), a smaller cross-encoder such as `bge-reranker-base` (needs a new sweep), or a hosted reranker API. int8 dynamic quantization was measured at 2.4x faster but moves scores by up to 0.13, too much at a 0.03 threshold.
+- The gate catches what retrieval cannot support, not everything that should be refused: N-05 (0.29) and the prompt-injection question E-06 (0.80) pass it and rely on the prompt's refusal rule and the injection defenses. Multi-part questions score low with a cross-encoder, which is why the threshold is near 0.
+- A changed `RAG_RERANK_THRESHOLD` only applies to new requests; answers already cached keep being served (refusals by the gate are not cached).
 - Rewrite runs before the cache lookup (roadmap order), so a multi-turn cache hit still pays for one small-model call.
 - The budget estimate uses tiktoken `o200k_base`; for Claude / Qwen it can undercount, so actual spend can exceed the limit by the estimation error of the requests in flight. Measured `estimated vs actual` lands in M3's `rag_request_summary`.
 - Through OpenRouter all models share one upstream: an OpenRouter outage fails every remote model at once (each still has its own breaker), and Claude refusals / cache-token counts come through the OpenAI-compatible format, not the native Anthropic one.
-- Streaming answers are checked for citations only after the stream ends (the `done` event); the disclaimer is M3.
+- On a citation mismatch in a stream, the bad `[n]` has already reached the client; the disclaimer follows as the last delta (tokens cannot be recalled).
 - The Docker image installs without the `[embed]` extra, so `RAG_EMBEDDER=bge-m3` only works for a locally run API; the full-stack image needs a CPU-torch install step.
-- Reranker is a `TODO(M3)` stub.
 - Prices in `configs/models.yaml` are `null`; fill them in from each provider's current price page.

@@ -42,6 +42,7 @@ def settings() -> Settings:
         _env_file=None,
         jwt_secret=SecretStr("test-secret-at-least-32-bytes-long!!"),
         embedder="fake",  # never download a model in tests
+        reranker="fake",
         qdrant_collection=TEST_COLLECTION,
     )
 

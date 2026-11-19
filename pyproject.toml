@@ -22,7 +22,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Local bge-m3 (dense + sparse). Pulls torch; tests use FakeEmbedder and do not need it.
+# Local bge-m3 (dense + sparse) and bge-reranker (via transformers). Pulls torch; tests use
+# FakeEmbedder / FakeReranker and do not need it.
 embed = [
     "FlagEmbedding>=1.3",
 ]
