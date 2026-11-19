@@ -21,6 +21,15 @@ class Settings(BaseSettings):
     qdrant_collection: str = "kb_chunks"
     redis_url: str = "redis://localhost:6379/0"
 
+    # LLM providers. configs/models.yaml names each key by its env var (`api_key_env`);
+    # the matching field here is that name without the RAG_ prefix, lowercased.
+    anthropic_api_key: SecretStr | None = None
+    dashscope_api_key: SecretStr | None = None
+    openai_api_key: SecretStr | None = None
+    # Optional per-provider base_url override, e.g.
+    # RAG_PROVIDER_BASE_URLS='{"dashscope": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"}'
+    provider_base_urls: dict[str, str] = {}
+
     # Embeddings (app/rag/embeddings.py)
     embedder: Literal["bge-m3", "fake"] = "bge-m3"
     embed_model_name: str = "BAAI/bge-m3"

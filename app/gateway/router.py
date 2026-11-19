@@ -16,8 +16,9 @@ from typing import Any, Literal
 
 import yaml
 
-from app.gateway.base import BaseLLMProvider, ChatMessage, LLMResponse
+from app.gateway.base import BaseLLMProvider, ChatMessage, LLMResponse, NonRetryableLLMError
 from app.gateway.circuit_breaker import CircuitBreaker
+from app.gateway.providers.template import TemplateProvider
 
 Task = Literal["rewrite", "answer"]
 
@@ -88,8 +89,30 @@ class ModelRouter:
     def breaker(self, model_key: str) -> CircuitBreaker:
         return self._breakers[model_key]
 
+    def available_chain(self, task: Task) -> list[ModelSpec]:
+        """The task's chain minus models whose provider is not configured (no API key or
+        adapter not implemented yet). Skipping an unconfigured model is a deployment choice,
+        not a degradation."""
+        return [spec for spec in self.chain(task) if spec.provider in self._providers]
+
     async def chat(self, task: Task, messages: list[ChatMessage]) -> RoutedResponse:
-        # TODO(M2): implement retry + backoff + breaker + fallback loop described above.
-        raise NotImplementedError("ModelRouter.chat — milestone M2")
+        """M1: call the first configured model of the chain once; errors propagate.
+
+        TODO(M2): retry + backoff + breaker + fallback loop described in the module docstring.
+        """
+        chain = self.available_chain(task)
+        if not chain:
+            raise NonRetryableLLMError(f"no configured model for task '{task}'")
+        spec = chain[0]
+        provider = self._providers[spec.provider]
+        response = await provider.chat(
+            messages,
+            model=spec.model,
+            max_tokens=spec.max_output_tokens,
+            timeout_s=spec.timeout_s,
+        )
+        # The static template is a last resort, never a real answer.
+        degraded = isinstance(provider, TemplateProvider)
+        return RoutedResponse(response=response, model_key=spec.key, degraded=degraded, attempts=1)
 
     # TODO(M2): async def stream(self, task, messages) -> AsyncIterator[...]

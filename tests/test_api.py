@@ -2,12 +2,35 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
-from app.main import app
+from app.main import app, get_pipeline
+from app.observability.trace import current_trace_id
+from app.schemas import ChatRequest, ChatResponse, Identity
+
+
+class StubPipeline:
+    """Echoes the verified identity back, so tests can see what the route passed in."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[ChatRequest, Identity]] = []
+
+    async def answer(self, request: ChatRequest, identity: Identity) -> ChatResponse:
+        self.calls.append((request, identity))
+        return ChatResponse(
+            trace_id=current_trace_id() or "",
+            answer=f"{identity.tenant_id}/{identity.role.value}",
+            model_used="stub",
+        )
 
 
 @pytest.fixture
-def client(settings):
+def pipeline() -> StubPipeline:
+    return StubPipeline()
+
+
+@pytest.fixture
+def client(settings, pipeline):
     app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_pipeline] = lambda: pipeline
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -33,14 +56,27 @@ def test_role_header_is_ignored(client):
     assert r.status_code == 401
 
 
-def test_chat_with_token_reaches_pipeline(client, make_token):
+def test_chat_with_token_reaches_pipeline(client, make_token, pipeline):
     r = client.post(
         "/v1/chat",
         json={"query": "expense process"},
         headers={"Authorization": f"Bearer {make_token()}"},
     )
-    assert r.status_code == 501  # TODO(M1): expect 200 once the pipeline exists
+    assert r.status_code == 200
     assert r.json()["trace_id"] == r.headers["X-Trace-ID"]
+    [(request, identity)] = pipeline.calls
+    assert request.query == "expense process"
+    assert (identity.tenant_id, identity.role.value) == ("acme_corp", "intern")
+
+
+def test_identity_in_body_is_ignored(client, make_token, pipeline):
+    """Only the JWT decides identity; extra body fields cannot override it."""
+    r = client.post(
+        "/v1/chat",
+        json={"query": "salary", "tenant_id": "beta_inc", "role": "hr"},
+        headers={"Authorization": f"Bearer {make_token()}"},
+    )
+    assert r.status_code == 200 and r.json()["answer"] == "acme_corp/intern"
 
 
 def test_ui_is_served(client):
@@ -58,7 +94,8 @@ def test_dev_token_is_verified_like_any_other(client):
     chat = client.post(
         "/v1/chat", json={"query": "hi"}, headers={"Authorization": f"Bearer {token}"}
     )
-    assert chat.status_code == 501  # authenticated; TODO(M1): expect 200
+    assert chat.status_code == 200
+    assert chat.json()["answer"] == "beta_inc/eng"
 
 
 def test_dev_token_rejects_unknown_tenant(client):
