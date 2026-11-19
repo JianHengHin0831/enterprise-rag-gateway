@@ -37,12 +37,13 @@ def direct_vendor_models_config(path: Path) -> dict:
 
 
 @pytest.fixture
-def settings() -> Settings:
+def settings(tmp_path) -> Settings:
     return Settings(
         _env_file=None,
         jwt_secret=SecretStr("test-secret-at-least-32-bytes-long!!"),
         embedder="fake",  # never download a model in tests
         reranker="fake",
+        audit_log_path=tmp_path / "audit.jsonl",  # never write into the repo's logs/
         qdrant_collection=TEST_COLLECTION,
     )
 

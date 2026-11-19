@@ -19,7 +19,7 @@ It simulates the HR / engineering / company-wide document libraries of a fiction
 | Streaming | SSE; retry/fallback **only before the first token**, after that a failure ends the stream with `event: error` |
 | Cost | tiktoken estimate + actual usage reconciliation; Redis daily budget with "reserve → settle" to prevent concurrent overspend |
 | Cache | L1 in-process TTLCache + L2 Redis; key binds tenant / role / prompt version / rewrite prompt version / index version; degraded answers are never cached |
-| Observability | `contextvars` trace_id; `Span` timing for rewrite / retrieve / rerank / llm; single-line JSON logs with automatic PII masking; `rag_request_summary` event; separate audit log |
+| Observability | `contextvars` trace_id; `Span` timing for rewrite / retrieve / rerank / llm; single-line JSON logs with automatic PII masking; `rag_request_summary` event (tokens estimated vs actual, cost, per-step ms); append-only audit log (query hash only, every decision incl. client disconnects); optional LangFuse export over OTLP |
 | Evaluation | Golden set (answerable / no-answer traps / unauthorized / cross-tenant / injection), compared against a baseline |
 
 ---

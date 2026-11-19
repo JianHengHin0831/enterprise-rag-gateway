@@ -9,7 +9,9 @@ Order (each step inside a `Span`):
   6. budget.reserve(estimate)                     -> 429 / downgrade        (M2)
   7. router.chat / router.open_stream ("answer")                            (M1/M2)
   8. check_citations on the full text -> disclaimer + metric on mismatch   (M3)
-  9. budget.settle; should_cache -> cache.set; audit; rag_request_summary  (M2/M3)
+  9. budget.settle; should_cache -> cache.set                               (M2)
+ 10. _record (always, in `finally`): audit line + `rag_request_summary`     (M3)
+     + optional trace export (LangFuse)
 
 (`screen_text(query)` runs in the API layer before the pipeline.)
 
@@ -28,15 +30,23 @@ refusal text is returned without an LLM call. Low-score refusals are not cached,
 recalibrated threshold takes effect at once. Without a reranker the first `context_top_n`
 fused hits go to the LLM (no gate).
 
+Recording: every request ends in exactly one audit line and one `rag_request_summary` event,
+whatever the outcome (answer, cache hit, refusal, 429, upstream error, client disconnect
+mid-stream). Neither may fail the request: write errors are logged and swallowed.
+
 Citations: the check runs on the complete answer (for streams: after the last delta). On a
 mismatch the DISCLAIMER is appended (streams get it as one extra `delta`), the metric
 `rag_citation_mismatch_total` is incremented and the answer is never cached.
 """
 
+import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
+
+import anyio
 
 from app.cache.keys import build_cache_key, should_cache
 from app.cache.layered import LayeredCache
@@ -47,19 +57,32 @@ from app.gateway.base import ChatMessage, Usage
 from app.gateway.router import ModelRouter, Task
 from app.observability import metrics
 from app.observability.logging import log_event
-from app.observability.trace import Span, current_trace_id, steps_ms
+from app.observability.trace import Span, SpanRecord, current_spans, current_trace_id, steps_ms
 from app.rag.citations import DISCLAIMER, check_citations
 from app.rag.prompts import PromptTemplate
 from app.rag.reranker import Reranker, passes_gate
 from app.rag.rewrite import QueryRewriter, RewriteResult
 from app.schemas import ChatRequest, ChatResponse, Citation, Identity, RetrievedChunk
+from app.security.audit import AuditLogger, Decision, build_record
 from app.security.injection import wrap_documents
 
 logger = logging.getLogger("rag.pipeline")
 
+# Cleanup (budget settle, audit, summary) runs in `finally` and must survive cancellation: on a
+# client disconnect Starlette cancels the streaming task through an anyio cancel scope, which
+# re-cancels every later await, so unshielded cleanup would silently never happen.
+CLEANUP_TIMEOUT_S = 10.0
+
 
 class Retriever(Protocol):
     async def search(self, query: str, identity: Identity, top_k: int) -> list[RetrievedChunk]: ...
+
+
+class TraceExporter(Protocol):
+    """Ships a finished request's spans + summary to a tracing backend. Must not block or
+    raise: implementations schedule the network call in the background."""
+
+    def submit(self, summary: dict[str, Any], spans: list[SpanRecord]) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -73,7 +96,7 @@ class StreamEvent:
 
 @dataclass
 class _Plan:
-    rewrite: RewriteResult
+    rewrite: RewriteResult | None = None
     cache_key: str | None = None
     response: ChatResponse | None = None  # set when no LLM call is needed (hit / refusal)
     contexts: list[RetrievedChunk] = field(default_factory=list)
@@ -82,6 +105,15 @@ class _Plan:
     downgraded: bool = False
     reservation: Reservation | None = None
     refusal_reason: Literal["no_results", "low_score"] | None = None
+    # Recording (audit + rag_request_summary)
+    started: float = field(default_factory=time.perf_counter)
+    retrieved_doc_ids: list[str] = field(default_factory=list)
+    estimated_prompt_tokens: int | None = None
+    reserved_tokens: int | None = None
+    usage: Usage | None = None
+    model_key: str | None = None  # set once a model is chosen, even if no answer follows
+    final: ChatResponse | None = None
+    error: BaseException | None = None
 
 
 class RagPipeline:
@@ -98,6 +130,8 @@ class RagPipeline:
         rewriter: QueryRewriter | None = None,
         reranker: Reranker | None = None,
         rerank_threshold: float = 0.0,
+        audit: AuditLogger | None = None,
+        exporter: TraceExporter | None = None,
     ) -> None:
         self._retriever = retriever
         self._router = router
@@ -109,6 +143,8 @@ class RagPipeline:
         self._rewriter = rewriter
         self._reranker = reranker
         self._rerank_threshold = rerank_threshold
+        self._audit = audit
+        self._exporter = exporter
 
     @property
     def refusal_text(self) -> str:
@@ -117,33 +153,64 @@ class RagPipeline:
     # ---------- public entry points ----------
 
     async def answer(self, request: ChatRequest, identity: Identity) -> ChatResponse:
-        plan = await self._prepare(request, identity)
-        if plan.response is not None:
-            return self._finish(identity, plan, plan.response)
-
-        actual = 0
+        plan = _Plan()
         try:
-            async with Span("llm", task=plan.task, contexts=len(plan.contexts)) as span:
-                routed = await self._router.chat(plan.task, plan.messages)
-                usage = routed.response.usage
-                actual = usage.prompt_tokens + usage.completion_tokens
-                _llm_span_attrs(span, routed.model_key, routed.degraded, routed.attempts, usage)
-        finally:
-            await self._settle(plan, actual)
+            await self._prepare(plan, request, identity)
+            if plan.response is not None:
+                plan.final = plan.response
+                return plan.response
 
-        response = self._build(
-            plan, routed.response.text, routed.model_key, routed.degraded, routed.response.usage
-        )
-        await self._store(plan, response)
-        return self._finish(identity, plan, response)
+            actual = 0
+            try:
+                async with Span("llm", task=plan.task, contexts=len(plan.contexts)) as span:
+                    routed = await self._router.chat(plan.task, plan.messages)
+                    plan.model_key = routed.model_key
+                    usage = plan.usage = routed.response.usage
+                    actual = usage.prompt_tokens + usage.completion_tokens
+                    _llm_span_attrs(span, routed.model_key, routed.degraded, routed.attempts, usage)
+            finally:
+                await self._settle(plan, actual)
+
+            response = self._build(
+                plan, routed.response.text, routed.model_key, routed.degraded, usage
+            )
+            await self._store(plan, response)
+            plan.final = response
+            return response
+        except BaseException as exc:
+            plan.error = exc
+            raise
+        finally:
+            with anyio.move_on_after(CLEANUP_TIMEOUT_S, shield=True):
+                await self._record(request, identity, plan, stream=False)
 
     async def stream(self, request: ChatRequest, identity: Identity) -> AsyncIterator[StreamEvent]:
         """Async generator of StreamEvents. Everything up to and including the first token
         happens before the first (`meta`) event, so the API layer can still answer with a
         plain HTTP error when it fails; later failures propagate after `meta` was sent."""
-        plan = await self._prepare(request, identity)
+        plan = _Plan()
+        inner = self._stream(plan, request, identity)
+        try:
+            async for event in inner:
+                yield event
+        except BaseException as exc:  # incl. GeneratorExit when the client disconnects
+            plan.error = exc
+            raise
+        finally:
+            with anyio.move_on_after(CLEANUP_TIMEOUT_S, shield=True):
+                # Leaving `async for` does not close `inner`: when this generator is closed
+                # while suspended at `yield`, `inner` is still suspended inside the `llm`
+                # span with its budget settle pending. Close it first (its own `finally`
+                # settles), so the record sees the llm span and nothing is left to the GC.
+                await inner.aclose()
+                await self._record(request, identity, plan, stream=True)
+
+    async def _stream(
+        self, plan: _Plan, request: ChatRequest, identity: Identity
+    ) -> AsyncIterator[StreamEvent]:
+        await self._prepare(plan, request, identity)
         if plan.response is not None:
-            response = self._finish(identity, plan, plan.response)
+            response = plan.final = plan.response
             yield _meta(response.model_used, response.degraded, response.cache_hit)
             if response.answer:
                 yield StreamEvent("delta", {"text": response.answer})
@@ -157,6 +224,7 @@ class RagPipeline:
                 "llm", task=plan.task, contexts=len(plan.contexts), stream=True
             ) as span:
                 routed = await self._router.open_stream(plan.task, plan.messages)
+                plan.model_key = routed.model_key
                 started = True
                 degraded = routed.degraded or plan.downgraded
                 yield _meta(routed.model_key, degraded, False)
@@ -168,7 +236,7 @@ class RagPipeline:
                         parts.append(chunk.delta)
                         yield StreamEvent("delta", {"text": chunk.delta})
                     if chunk.usage is not None:
-                        usage = chunk.usage
+                        usage = plan.usage = chunk.usage
                 _llm_span_attrs(span, routed.model_key, routed.degraded, routed.attempts, usage)
 
             await self._settle(plan, usage.prompt_tokens + usage.completion_tokens)
@@ -179,22 +247,24 @@ class RagPipeline:
                 # ends the same way as the `done` answer.
                 yield StreamEvent("delta", {"text": DISCLAIMER})
             await self._store(plan, response)
-            yield StreamEvent("done", self._finish(identity, plan, response).model_dump())
+            plan.final = response
+            yield StreamEvent("done", response.model_dump())
         finally:
             if not settled:
                 # Before the first token nothing was generated: refund. After it the real
                 # usage is unknown, so the estimate stays booked (conservative).
                 reservation = plan.reservation
-                await self._settle(plan, reservation.tokens if started and reservation else 0)
+                with anyio.move_on_after(CLEANUP_TIMEOUT_S, shield=True):
+                    await self._settle(plan, reservation.tokens if started and reservation else 0)
 
     # ---------- stages ----------
 
-    async def _prepare(self, request: ChatRequest, identity: Identity) -> _Plan:
+    async def _prepare(self, plan: _Plan, request: ChatRequest, identity: Identity) -> None:
         if self._rewriter is not None:
             rewrite = await self._rewriter.rewrite(request, identity)
         else:
             rewrite = RewriteResult(query=request.query, rewritten=False, attempted=False)
-        plan = _Plan(rewrite=rewrite)
+        plan.rewrite = rewrite
         query = rewrite.query
 
         cacheable = not request.history or rewrite.rewritten
@@ -215,17 +285,18 @@ class RagPipeline:
                     plan.response = await self._cache.get(plan.cache_key)
                 span.set("hit", plan.response is not None)
             if plan.response is not None:
-                return plan
+                return
 
         async with Span("retrieve", top_k=self._retrieve_top_k) as span:
             hits = await self._retriever.search(query, identity, self._retrieve_top_k)
             span.set("hits", len(hits))
-            span.set("retrieved_doc_ids", sorted({h.doc_id for h in hits}))
+            plan.retrieved_doc_ids = sorted({h.doc_id for h in hits})
+            span.set("retrieved_doc_ids", plan.retrieved_doc_ids)
             span.set("suspicious_hits", sum(h.suspicious for h in hits))
 
         if not hits:
             await self._refuse(plan, "no_results")
-            return plan
+            return
 
         if self._reranker is None:
             plan.contexts = hits[: self._context_top_n]
@@ -241,7 +312,7 @@ class RagPipeline:
             metrics.inc("rag_rerank_gate_total", decision="passed" if passed else "refused")
             if not passed:
                 await self._refuse(plan, "low_score")
-                return plan
+                return
             plan.contexts = ranked
 
         wrapped = wrap_documents(plan.contexts)
@@ -252,8 +323,8 @@ class RagPipeline:
                 content=self._prompt.render_user(documents=wrapped.text, query=query),
             ),
         ]
+        plan.estimated_prompt_tokens = estimate_messages_tokens(plan.messages)
         await self._reserve(plan, identity)
-        return plan
 
     async def _refuse(self, plan: _Plan, reason: Literal["no_results", "low_score"]) -> None:
         """Fixed refusal without an LLM call."""
@@ -268,7 +339,7 @@ class RagPipeline:
     async def _reserve(self, plan: _Plan, identity: Identity) -> None:
         if self._budget is None:
             return
-        prompt_tokens = estimate_messages_tokens(plan.messages)
+        prompt_tokens = plan.estimated_prompt_tokens or 0
         async with Span("budget") as span:
             reservation = await self._budget.reserve(
                 identity.tenant_id, prompt_tokens + self._router.max_output_tokens("answer")
@@ -289,6 +360,7 @@ class RagPipeline:
         if not reservation.accepted:
             raise BudgetExceededError(identity.tenant_id)
         plan.reservation = reservation
+        plan.reserved_tokens = reservation.tokens
 
     async def _settle(self, plan: _Plan, actual_tokens: int) -> None:
         if self._budget is not None and plan.reservation is not None:
@@ -343,26 +415,99 @@ class RagPipeline:
             cost_usd=compute_cost_usd(usage, self._router.spec(model_key)),
         )
 
-    def _finish(self, identity: Identity, plan: _Plan, response: ChatResponse) -> ChatResponse:
-        log_event(
-            logger,
-            "chat_response",
-            tenant_id=identity.tenant_id,
-            role=identity.role.value,
-            user_id=identity.user_id,
-            refused=response.refused,
-            refusal_reason=plan.refusal_reason,
-            cache_hit=response.cache_hit,
-            rewritten=plan.rewrite.rewritten,
-            model_used=response.model_used,
-            degraded=response.degraded,
-            downgraded=plan.downgraded,
-            cost_usd=response.cost_usd,
-            citations=[c.doc_id for c in response.citations],
-            citation_mismatch=response.citation_mismatch,
-            steps_ms=steps_ms(),
-        )
-        return response
+    async def _record(
+        self, request: ChatRequest, identity: Identity, plan: _Plan, *, stream: bool
+    ) -> None:
+        """One `rag_request_summary` event + one audit line (+ optional export) per request.
+        Runs in `finally`; must never raise into the request."""
+        try:
+            decision = _decision(plan)
+            response = plan.final
+            usage = plan.usage
+            actual_prompt = usage.prompt_tokens if usage else None
+            estimate = plan.estimated_prompt_tokens
+            error = plan.error
+            error_type = None
+            if error is not None and decision is Decision.ERROR:
+                cancelled = isinstance(error, GeneratorExit | asyncio.CancelledError)
+                error_type = "ClientDisconnected" if cancelled and stream else type(error).__name__
+            summary: dict[str, Any] = {
+                "tenant_id": identity.tenant_id,
+                "role": identity.role.value,
+                "user_id": identity.user_id,
+                "decision": decision.value,
+                "error_type": error_type,
+                "stream": stream,
+                "refused": bool(response and response.refused),
+                "refusal_reason": plan.refusal_reason,
+                "cache_hit": bool(response and response.cache_hit),
+                "rewritten": bool(plan.rewrite and plan.rewrite.rewritten),
+                "model_used": response.model_used if response else plan.model_key,
+                "degraded": bool(response and response.degraded),
+                "downgraded": plan.downgraded,
+                "retrieved_doc_ids": plan.retrieved_doc_ids,
+                "citations": [c.doc_id for c in response.citations] if response else [],
+                "citation_mismatch": bool(response and response.citation_mismatch),
+                "prompt_tokens": actual_prompt,
+                "completion_tokens": usage.completion_tokens if usage else None,
+                "estimated_prompt_tokens": estimate,
+                "prompt_estimate_error_pct": (
+                    round((estimate - actual_prompt) / actual_prompt * 100, 1)
+                    if estimate is not None and actual_prompt
+                    else None
+                ),
+                "reserved_tokens": plan.reserved_tokens,
+                "actual_tokens": (usage.prompt_tokens + usage.completion_tokens) if usage else None,
+                "cost_usd": response.cost_usd if response else None,
+                "steps_ms": steps_ms(),
+                "total_ms": round((time.perf_counter() - plan.started) * 1000, 2),
+            }
+            log_event(logger, "rag_request_summary", **summary)
+            if self._exporter is not None:
+                self._exporter.submit(summary, current_spans())
+        except Exception as exc:  # noqa: BLE001 - observability must not fail the request
+            log_event(logger, "request_summary_failed", level=logging.ERROR, error=repr(exc))
+            return
+
+        if self._audit is None:
+            return
+        try:
+            await self._audit.awrite(
+                build_record(
+                    trace_id=_tid(),
+                    identity=identity,
+                    query=request.query,
+                    retrieved_doc_ids=plan.retrieved_doc_ids,
+                    cited_doc_ids=summary["citations"],
+                    decision=decision,
+                    model_used=summary["model_used"],
+                    degraded=summary["degraded"],
+                    error_type=error_type,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - see the trade-off in STATUS.md
+            log_event(logger, "audit_write_failed", level=logging.ERROR, error=type(exc).__name__)
+
+
+def _decision(plan: _Plan) -> Decision:
+    if plan.error is not None and plan.final is None:
+        if isinstance(plan.error, BudgetExceededError):
+            return Decision.BUDGET_EXCEEDED
+        return Decision.ERROR
+    if plan.error is not None:  # the answer was built, then the client went away
+        return Decision.ERROR
+    response = plan.final
+    if response is None:
+        return Decision.ERROR
+    if response.cache_hit:
+        return Decision.CACHE_HIT
+    if plan.refusal_reason == "low_score":
+        return Decision.REFUSED_LOW_SCORE
+    if plan.refusal_reason == "no_results":
+        return Decision.REFUSED_NO_RESULTS
+    if response.refused:
+        return Decision.REFUSED_BY_MODEL
+    return Decision.ANSWERED
 
 
 def _meta(model_used: str | None, degraded: bool, cache_hit: bool) -> StreamEvent:

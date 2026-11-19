@@ -5,8 +5,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
+import anyio
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import (
@@ -20,6 +21,7 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
+from starlette.types import Receive, Scope, Send
 
 from app.cache.layered import LayeredCache
 from app.config import Settings, get_settings
@@ -28,6 +30,7 @@ from app.gateway.base import AllModelsFailedError, LLMError
 from app.gateway.factory import build_providers
 from app.gateway.router import ModelRouter, load_models_config
 from app.observability import metrics
+from app.observability.langfuse import build_exporter
 from app.observability.logging import configure_logging, log_event
 from app.observability.trace import current_trace_id, start_trace
 from app.rag.embeddings import Embedder, build_embedder
@@ -44,6 +47,7 @@ from app.schemas import (
     Identity,
     RetrievedChunk,
 )
+from app.security.audit import AuditLogger
 from app.security.auth import get_identity, issue_token
 from app.security.injection import screen_text
 
@@ -51,6 +55,7 @@ logger = logging.getLogger("rag.api")
 
 WEB_DIR = Path(__file__).parent / "web"
 DEV_TOKEN_TTL = timedelta(hours=1)
+STREAM_CLEANUP_TIMEOUT_S = 10.0
 
 
 @asynccontextmanager
@@ -72,6 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         providers=build_providers(models_config, settings, app.state.http),
     )
     budget = BudgetGuard.from_config(app.state.redis, models_config)
+    exporter = build_exporter(settings, app.state.http)
     app.state.pipeline = RagPipeline(
         retriever=HybridRetriever(app.state.qdrant, embedder, settings.qdrant_collection),
         router=router,
@@ -80,6 +86,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         context_top_n=settings.rerank_top_n,
         reranker=reranker,
         rerank_threshold=settings.rerank_threshold,
+        audit=AuditLogger(settings.audit_log_path),
+        exporter=exporter,
         budget=budget,
         cache=LayeredCache(
             app.state.redis,
@@ -102,6 +110,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         warmup.cancel()
+        if exporter is not None:
+            await exporter.aclose()
         await app.state.qdrant.close()
         await app.state.http.aclose()
         await app.state.redis.aclose()
@@ -250,8 +260,9 @@ async def chat(
         first = await anext(events)
     except Exception as exc:
         return _error_response(exc)
-    return StreamingResponse(
+    return PipelineStreamingResponse(
         _sse(first, events),
+        events=events,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -276,6 +287,31 @@ async def _sse(first: StreamEvent, events: AsyncIterator[StreamEvent]) -> AsyncI
         )
     finally:
         await events.aclose()  # type: ignore[attr-defined]
+
+
+class PipelineStreamingResponse(StreamingResponse):
+    """Closes the pipeline's event generator however the response ends.
+
+    On a client disconnect Starlette (ASGI spec < 2.4) cancels the response task group. If
+    that happens before the body iterator starts (the client left while retrieval / rerank
+    ran), `_sse` never runs and its `finally` never fires, leaving the pipeline generator
+    suspended: no budget settle, no audit line, no rag_request_summary. Closing it here,
+    shielded from the cancellation and time-bounded, guarantees that cleanup. Closing an
+    already-finished generator is a no-op.
+    """
+
+    def __init__(
+        self, content: AsyncIterator[str], *, events: AsyncIterator[StreamEvent], **kwargs: Any
+    ) -> None:
+        super().__init__(content, **kwargs)
+        self._events = events
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with anyio.move_on_after(STREAM_CLEANUP_TIMEOUT_S, shield=True):
+                await self._events.aclose()  # type: ignore[attr-defined]
 
 
 def _sse_frame(event: str, data: dict) -> str:

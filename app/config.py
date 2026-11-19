@@ -65,8 +65,13 @@ class Settings(BaseSettings):
     rewrite_min_words: int = 4
     rewrite_timeout_s: float = 6.0  # rewrite via OpenRouter takes ~3 s; 3.0 timed out
 
-    # Audit
+    # Audit (append-only JSONL, one line per /v1/chat request)
     audit_log_path: Path = Path("logs/audit.jsonl")
+
+    # Optional LangFuse trace export (OTLP/HTTP); off unless both keys are set.
+    langfuse_host: str = "https://cloud.langfuse.com"
+    langfuse_public_key: SecretStr | None = None
+    langfuse_secret_key: SecretStr | None = None
 
 
 @lru_cache

@@ -1,7 +1,7 @@
 # Status
 
 **Current milestone:** M3 — anti-hallucination + security audit
-**Last updated:** 2026-11-19
+**Last updated:** 2026-11-20
 
 ## Done
 - M0 skeleton: pure-logic modules (auth / ACL filter / sanitizer / trace / circuit breaker / cache key / citations / injection wrapping / pricing / prompt loader) implemented with unit tests.
@@ -47,20 +47,39 @@
   - Tests: `tests/test_m3_rerank_citations.py` (incl. the M3 acceptance "no-answer question -> low-score refusal, no `llm` span"), `tests/test_threshold_sweep.py`. Test settings pin `reranker="fake"` so the app lifespan never loads the model.
   - Verified 2026-11-19: `pytest tests/` 244 passed, `ruff check .` clean, golden-set dry run valid; live on the full stack (bge-m3 + bge-reranker + OpenRouter): N-01 and C-01 refused with steps `cache_lookup, retrieve, rerank` only and cost 0; A-01 answered by claude-sonnet citing `acme_expense`; SSE (E-03 VPN question) streamed meta -> 57 deltas -> done with no URL from the injection doc; `/metrics` counted 2 low-score refusals and 1 pass.
 
+- M3 items 5–7 (audit log, `rag_request_summary`, optional LangFuse):
+  - Recording: `RagPipeline._record` runs in `finally` for every request, whatever the outcome, and writes exactly one `rag_request_summary` event and one audit line (then hands the trace to the optional exporter). Failures there are logged (`request_summary_failed` / `audit_write_failed`) and never fail the request. The old `chat_response` event is folded into the summary.
+  - Audit (`app/security/audit.py`, `RAG_AUDIT_LOG_PATH`, default `logs/audit.jsonl`): `ts / trace_id / user_id / tenant_id / role / query_hash / retrieved_doc_ids / cited_doc_ids / decision / model_used / degraded / error_type`. Decisions: `answered`, `refused_low_score`, `refused_no_results`, `refused_by_model`, `cache_hit`, `budget_exceeded`, `error` (`error_type` = exception name, or `ClientDisconnected`). Only a hash of the raw query is stored. Append-only: opened in "a" mode only, no rewrite API; writes run off the event loop (`asyncio.to_thread`) behind a lock so concurrent lines never interleave.
+  - `rag_request_summary`: decision, stream, refused / refusal_reason, cache_hit, rewritten, model_used, degraded / downgraded, retrieved + cited doc ids, citation_mismatch, `prompt_tokens` / `completion_tokens`, `estimated_prompt_tokens` vs actual (`prompt_estimate_error_pct`), `reserved_tokens`, `actual_tokens`, `cost_usd`, `steps_ms`, `total_ms`. No query, answer or document text.
+  - LangFuse (`app/observability/langfuse.py`): off unless `RAG_LANGFUSE_PUBLIC_KEY` + `RAG_LANGFUSE_SECRET_KEY` are set. LangFuse's legacy batch-ingestion API was sunset on Langfuse Cloud on 2026-11-16, so it uses the supported OTLP/HTTP endpoint (`/api/public/otel/v1/traces`, Basic auth, `x-langfuse-ingestion-version: 4`, JSON encoding): a root `rag_request` span with trace attributes (user, tenant, decision, cost, ...) plus one child per pipeline span, the `llm` span typed as a generation with model and token usage. Sent in the background on the shared HTTP client; failures are logged with the status only; flushed on shutdown.
+  - **Client-disconnect bug found live and fixed.** A streaming client that hung up was never audited and its budget reservation never settled. Two causes:
+    1. uvicorn reports ASGI spec 2.3, so Starlette cancels the response task group on disconnect. Our `@app.middleware("http")` (BaseHTTPMiddleware) passes messages through a zero-buffer stream, so the response was cancelled while blocked in `send`, with `_sse` suspended or never started, and nothing closed the pipeline generator. Fix: `PipelineStreamingResponse` closes it in a shielded, time-bounded `finally`.
+    2. anyio cancellation is level-triggered, so awaits in cleanup were cancelled again; and leaving `async for` did not close the inner `_stream` generator, so the `llm` span and budget settle were left to the garbage collector, after the record. Fix: the cleanup is shielded (`anyio.move_on_after(..., shield=True)`), and `stream()` closes `inner` before recording. `model_used` is now recorded for partial (disconnected) streams too.
+  - Tests: `tests/test_m3_audit_summary.py` (24): every decision path, append-only, 40 concurrent writes, audit failure tolerated, summary fields, exactly one summary per request, OTLP payload shape + privacy, exporter auth / headers / failure swallowed / off without keys, `/v1/chat` route audits a 503. ASGI-level disconnect tests through `PipelineStreamingResponse`: before the body (fails 3/3 without the response-level close), mid-generation, and a completed stream. Test settings write the audit to `tmp_path`.
+  - Verified 2026-11-20: `pytest tests/` 268 passed, `ruff check .` + `ruff format --check .` clean. Live on the full stack (bge-m3 + bge-reranker + OpenRouter), `logs/audit.jsonl` + server log:
+    - `answered` (A-01, cites `acme_expense`)
+    - `cache_hit` (same question, `steps_ms` = cache_lookup only, cost 0)
+    - `refused_low_score` (N-01, no `llm` step)
+    - `error` / `ClientDisconnected`: hang-up during rerank, and hang-up after the first delta with the `llm` span logged before the summary and `model_used: claude-sonnet`
+  - **Measured: the token estimate undercounts Claude by ~36%** (`prompt_estimate_error_pct` -36.9 and -35.4 on two answers: tiktoken `o200k_base` 1,059 vs 1,679 actual). The budget reservation still covered the request because it adds `max_output_tokens`.
+
 ## In progress
 - (none)
 
 ## Next
-- M3 items 5–7: audit log (`decision` incl. `refused_low_score`), `rag_request_summary` event, optional LangFuse; second M3 acceptance (injection doc retrieved -> no payload in output, no tag escape).
+- M3 acceptance #2: a test where an injection doc is retrieved and the output contains none of its payloads (phishing link / tampered numbers) and no tag escape happens. Then M3 is complete.
+- LangFuse: verify the exporter against a real LangFuse project (needs keys); the payload follows the OTLP JSON mapping and LangFuse's attribute names, but no live ingestion was tested.
 
 ## Known gaps
 - Claude Sonnet / Haiku 5.5 think adaptively by default and thinking tokens count toward `max_tokens`; with `max_output_tokens: 1024` / `256` a long thought could truncate the answer. The adapter sends no `thinking` / effort setting yet; revisit if answers come back cut off (`finish_reason == "max_tokens"`).
 - Content refusals are raised (502), not routed to another model.
-- **Rerank latency on CPU**: `bge-reranker-v2-m3` (568M params) takes ~7–14 s for 20 pairs on this laptop CPU (i5-12450H), which dominates uncached request latency (the LLM takes ~2 s). Options: a GPU (~0.1 s), a smaller cross-encoder such as `bge-reranker-base` (needs a new sweep), or a hosted reranker API. int8 dynamic quantization was measured at 2.4x faster but moves scores by up to 0.13, too much at a 0.03 threshold.
+- **Rerank latency on CPU**: `bge-reranker-v2-m3` (568M params) takes ~7–14 s for 20 pairs standalone on this laptop CPU (i5-12450H), and 31–37 s inside the running API on 2026-11-20 (cause not yet investigated: thread contention with the embedder or CPU throttling are candidates). It dominates uncached request latency (the LLM takes ~2 s). Options: a GPU (~0.1 s), a smaller cross-encoder such as `bge-reranker-base` (needs a new sweep), or a hosted reranker API. int8 dynamic quantization was measured at 2.4x faster but moves scores by up to 0.13, too much at a 0.03 threshold.
 - The gate catches what retrieval cannot support, not everything that should be refused: N-05 (0.29) and the prompt-injection question E-06 (0.80) pass it and rely on the prompt's refusal rule and the injection defenses. Multi-part questions score low with a cross-encoder, which is why the threshold is near 0.
 - A changed `RAG_RERANK_THRESHOLD` only applies to new requests; answers already cached keep being served (refusals by the gate are not cached).
 - Rewrite runs before the cache lookup (roadmap order), so a multi-turn cache hit still pays for one small-model call.
-- The budget estimate uses tiktoken `o200k_base`; for Claude / Qwen it can undercount, so actual spend can exceed the limit by the estimation error of the requests in flight. Measured `estimated vs actual` lands in M3's `rag_request_summary`.
+- The budget estimate uses tiktoken `o200k_base`, which undercounts Claude prompts by ~36% (measured via `prompt_estimate_error_pct`). The reservation adds `max_output_tokens`, so a single request is still covered, but the margin is thinner than it looks; a per-model correction factor would fix it.
+- Audit write failures are logged and swallowed (availability over completeness); a strict-compliance deployment would fail closed instead.
+- Audit lines are appended to a local file per process; with several workers or hosts they need shipping to central storage, and the file is not tamper-evident (no hash chain).
 - Through OpenRouter all models share one upstream: an OpenRouter outage fails every remote model at once (each still has its own breaker), and Claude refusals / cache-token counts come through the OpenAI-compatible format, not the native Anthropic one.
 - On a citation mismatch in a stream, the bad `[n]` has already reached the client; the disclaimer follows as the last delta (tokens cannot be recalled).
 - The Docker image installs without the `[embed]` extra, so `RAG_EMBEDDER=bge-m3` only works for a locally run API; the full-stack image needs a CPU-torch install step.

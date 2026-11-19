@@ -65,9 +65,9 @@ Goal: ingest docs with `tenant_id / allowed_roles`; `/v1/chat` runs the minimal 
 - [x] Low-score refusal gate: Top-1 score < threshold → fixed refusal, no LLM call
 - [x] **Calibrate the threshold by sweeping the golden set** (threshold vs accuracy/refusal-rate curve), add it to the README
 - [x] After streaming ends, run the citation check on the full text; on `citation_mismatch=true` append a disclaimer and record the metric
-- [ ] Audit log: `who / tenant / role / query_hash / retrieved_doc_ids / decision / ts` (append-only JSONL)
-- [ ] `rag_request_summary` event: `steps_ms`, `model_used`, `degraded`, `prompt/completion tokens`, `estimated vs actual`, `cost_usd`
-- [ ] Optional: LangFuse integration
+- [x] Audit log: `who / tenant / role / query_hash / retrieved_doc_ids / decision / ts` (append-only JSONL)
+- [x] `rag_request_summary` event: `steps_ms`, `model_used`, `degraded`, `prompt/completion tokens`, `estimated vs actual`, `cost_usd`
+- [x] Optional: LangFuse integration (OTLP/HTTP exporter, off by default; not yet verified against a live LangFuse project)
 
 **Acceptance**
 - A question with no answer in the corpus: low-score refusal, no `llm` span in the trace
