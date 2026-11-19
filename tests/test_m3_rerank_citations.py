@@ -256,3 +256,16 @@ def test_metrics_endpoint_renders_counters(settings):
 def test_unknown_metric_is_rejected():
     with pytest.raises(KeyError):
         metrics.inc("not_a_metric")
+
+
+def test_build_reranker_device_overrides_embed_device():
+    from app.config import Settings
+    from app.rag.reranker import BgeReranker, build_reranker
+
+    base = {"reranker": "bge-reranker", "embed_device": "cpu", "embed_use_fp16": True}
+    inherited = build_reranker(Settings(**base))
+    assert isinstance(inherited, BgeReranker)
+    assert inherited._device == "cpu" and inherited._use_fp16 is True
+
+    own = build_reranker(Settings(**base, rerank_device="cuda:0", rerank_use_fp16=False))
+    assert own._device == "cuda:0" and own._use_fp16 is False

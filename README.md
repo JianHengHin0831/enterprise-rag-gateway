@@ -32,7 +32,7 @@ flowchart LR
     subgraph Pipeline[RagPipeline]
         RW[Query rewrite<br/>small model] --> CL{L1/L2 cache<br/>tenant·role·versions}
         CL -->|miss| RET[Hybrid retrieval<br/>dense + sparse + RRF<br/>ACL on every prefetch]
-        RET --> RR[Rerank Top-20→5<br/>bge-reranker-v2-m3]
+        RET --> RR[Rerank Top-20→8<br/>bge-reranker-v2-m3]
         RR -->|top-1 < 0.03| REF[Fixed refusal<br/>no LLM call]
         RR -->|pass| WR[Nonce-wrapped docs<br/>+ versioned prompt]
         WR --> BG[Budget reserve<br/>Redis INCRBY]
@@ -62,7 +62,7 @@ Client ──(Authorization: Bearer <JWT>)──►
  5. Cache lookup: key = sha256(tenant, role, prompt_v, rewrite_v, index_v, query)
       └─ hit → stream back (cache_hit=true, cost=0)
  6. Hybrid retrieval: Qdrant prefetch[dense, sparse] + RRF, ACL filter on every prefetch → Top-20
- 7. Rerank → Top-5; Top-1 < threshold → fixed refusal (no LLM call)
+ 7. Rerank → Top-8; Top-1 < threshold → fixed refusal (no LLM call)
  8. ModelRouter: circuit breaker + backoff + fallback chain → SSE stream (with [n] citations)
  9. Post: citation check + truncation check → should_cache → write cache → settle budget → audit log + summary event
 ```
@@ -205,7 +205,7 @@ breaks the ACL on purpose and asserts the eval reports it). The eval uses its ow
   `re:` regex on the normalized text, so a correct paraphrase is not a miss
   (P-02: `re:\b3 (?:paid |sick |paid sick )?days\b` accepts "3 paid days", rejects "13 days").
 - **Judge (`--judge`) is grounded in what was retrieved.** The rerank span's `context_refs` (the
-  exact Top-5 the answering model saw, in prompt order) are captured per trace_id, the chunks
+  exact Top-N (8) the answering model saw, in prompt order) are captured per trace_id, the chunks
   are read back from Qdrant, nonce-wrapped like in the real prompt, and the judge
   (`configs/prompts/judge_v2.yaml`) grades whether every claim is supported by them:
   FAITHFUL 1 / PARTIAL 0.5 / UNFAITHFUL 0, including "repeated an injected instruction".

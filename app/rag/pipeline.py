@@ -64,7 +64,7 @@ from app.rag.prompts import PromptTemplate
 from app.rag.reranker import Reranker, passes_gate
 from app.rag.rewrite import QueryRewriter, RewriteResult
 from app.schemas import ChatRequest, ChatResponse, Citation, Identity, RetrievedChunk
-from app.security.audit import AuditLogger, Decision, build_record
+from app.security.audit import AuditLogger, Decision, build_record, hash_query
 from app.security.injection import wrap_documents
 
 logger = logging.getLogger("rag.pipeline")
@@ -475,6 +475,8 @@ class RagPipeline:
                 "tenant_id": identity.tenant_id,
                 "role": identity.role.value,
                 "user_id": identity.user_id,
+                "query_hash": hash_query(request.query),
+                "turns": len(request.history),
                 "decision": decision.value,
                 "error_type": error_type,
                 "stream": stream,

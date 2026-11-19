@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass
 
 from app.cost.budget import BudgetGuard
+from app.cost.pricing import compute_cost_usd
 from app.cost.tokens import estimate_messages_tokens
 from app.gateway.base import ChatMessage, LLMError
 from app.gateway.router import ModelRouter
@@ -91,6 +92,9 @@ class QueryRewriter:
                 actual = usage.prompt_tokens + usage.completion_tokens
                 span.set("model_used", routed.model_key)
                 span.set("degraded", routed.degraded)
+                span.set("prompt_tokens", usage.prompt_tokens)
+                span.set("completion_tokens", usage.completion_tokens)
+                span.set("cost_usd", compute_cost_usd(usage, self._router.spec(routed.model_key)))
                 text = _clean(routed.response.text)
             except (LLMError, TimeoutError) as exc:
                 span.set("fallback", "raw_query")

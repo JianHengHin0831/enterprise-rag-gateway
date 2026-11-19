@@ -154,8 +154,12 @@ def build_reranker(settings: Settings) -> Reranker:
         return FakeReranker()
     return BgeReranker(
         settings.rerank_model_name,
-        device=settings.embed_device,
-        use_fp16=settings.embed_use_fp16,
+        device=settings.rerank_device or settings.embed_device,
+        use_fp16=(
+            settings.embed_use_fp16
+            if settings.rerank_use_fp16 is None
+            else settings.rerank_use_fp16
+        ),
         batch_size=settings.embed_batch_size,
         max_length=settings.embed_max_length,
     )

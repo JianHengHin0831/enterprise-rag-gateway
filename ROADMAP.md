@@ -67,7 +67,7 @@ Goal: ingest docs with `tenant_id / allowed_roles`; `/v1/chat` runs the minimal 
 - [x] After streaming ends, run the citation check on the full text; on `citation_mismatch=true` append a disclaimer and record the metric
 - [x] Audit log: `who / tenant / role / query_hash / retrieved_doc_ids / decision / ts` (append-only JSONL)
 - [x] `rag_request_summary` event: `steps_ms`, `model_used`, `degraded`, `prompt/completion tokens`, `estimated vs actual`, `cost_usd`
-- [x] Optional: LangFuse integration (OTLP/HTTP exporter, off by default; not yet verified against a live LangFuse project)
+- [x] Optional: LangFuse integration (OTLP/HTTP exporter, off by default; verified against Langfuse Cloud on 2026-11-20: typed observations, usage, cost, environment and version)
 
 **Acceptance**
 - A question with no answer in the corpus: low-score refusal, no `llm` span in the trace

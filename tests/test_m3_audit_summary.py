@@ -24,6 +24,7 @@ from app.observability.langfuse import (
     LangfuseExporter,
     build_exporter,
     build_otlp_payload,
+    langfuse_environment,
 )
 from app.observability.trace import SpanRecord, current_spans, start_trace
 from app.rag.embeddings import FakeEmbedder
@@ -346,6 +347,93 @@ def test_otlp_payload_shape_and_privacy():
     assert llm_attrs["gen_ai.usage.input_tokens"] == {"intValue": "120"}
     assert llm_attrs["gen_ai.request.model"] == {"stringValue": "claude-sonnet"}
     assert int(llm["endTimeUnixNano"]) - int(llm["startTimeUnixNano"]) == 900_000_000
+
+
+def test_otlp_payload_follows_langfuse_best_practices():
+    secret_query = "What is the salary of Jane Roe?"
+    spans = [
+        SpanRecord(
+            name="rewrite",
+            start_ts=1000.0,
+            latency_ms=50,
+            attrs={
+                "model_used": "claude-haiku",
+                "prompt_tokens": 40,
+                "completion_tokens": 9,
+                "cost_usd": 0.0001,
+            },
+        ),
+        SpanRecord(name="retrieve", start_ts=1000.1, latency_ms=20, attrs={"hits": 3}),
+        SpanRecord(name="rerank", start_ts=1000.2, latency_ms=10, attrs={"passed": False}),
+        SpanRecord(name="budget", start_ts=1000.3, latency_ms=1, status="error"),
+        SpanRecord(
+            name="llm",
+            start_ts=1000.4,
+            latency_ms=900,
+            attrs={"model_used": "claude-sonnet", "prompt_tokens": 120, "completion_tokens": 30},
+        ),
+    ]
+    summary = {
+        "tenant_id": "acme_corp",
+        "role": "hr",
+        "user_id": "u_hr",
+        "query_hash": hash_query(secret_query),
+        "turns": 2,
+        "decision": "answered",
+        "cost_usd": 0.002,
+        "total_ms": 1400.0,
+    }
+    payload = build_otlp_payload(
+        "b" * 32, summary, spans, environment="dev", version="answer-v1.rewrite-v1"
+    )
+    assert secret_query not in json.dumps(payload)
+    otlp = payload["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    by_name = {s["name"]: {a["key"]: a["value"] for a in s["attributes"]} for s in otlp}
+    assert list(by_name) == [
+        "rag_request",
+        "rewrite-query",
+        "retrieve-context",
+        "rerank-and-gate",
+        "reserve-token-budget",
+        "generate-answer",
+    ]
+    types = {
+        n: a.get("langfuse.observation.type", {}).get("stringValue") for n, a in by_name.items()
+    }
+    assert types["rewrite-query"] == types["generate-answer"] == "generation"
+    assert types["retrieve-context"] == "retriever"
+    assert types["rerank-and-gate"] == "guardrail"
+    assert types["reserve-token-budget"] == "span"
+    # Trace-level attributes are on every span so observations can be filtered by them.
+    for attrs in by_name.values():
+        assert attrs["langfuse.user.id"] == {"stringValue": "u_hr"}
+        assert attrs["langfuse.environment"] == {"stringValue": "dev"}
+        assert attrs["langfuse.version"] == {"stringValue": "answer-v1.rewrite-v1"}
+        assert json.loads(attrs["langfuse.trace.tags"]["stringValue"]) == [
+            "acme_corp",
+            "hr",
+            "answered",
+        ]
+    root = by_name["rag_request"]
+    root_input = json.loads(root["langfuse.observation.input"]["stringValue"])
+    assert root_input == {"query_hash": hash_query(secret_query), "turns": 2, "stream": None}
+    assert json.loads(root["langfuse.observation.output"]["stringValue"])["decision"] == "answered"
+    rewrite, llm = by_name["rewrite-query"], by_name["generate-answer"]
+    assert rewrite["langfuse.observation.model.name"] == {"stringValue": "claude-haiku"}
+    assert rewrite["gen_ai.usage.output_tokens"] == {"intValue": "9"}
+    assert json.loads(rewrite["langfuse.observation.cost_details"]["stringValue"]) == {
+        "total": 0.0001
+    }
+    assert json.loads(llm["langfuse.observation.cost_details"]["stringValue"]) == {"total": 0.002}
+    assert by_name["rerank-and-gate"]["langfuse.observation.level"] == {"stringValue": "WARNING"}
+    assert by_name["reserve-token-budget"]["langfuse.observation.level"] == {"stringValue": "ERROR"}
+
+
+def test_langfuse_environment_name_is_validated():
+    assert langfuse_environment("Dev") == "dev"
+    assert langfuse_environment("prod-eu_1") == "prod-eu_1"
+    assert langfuse_environment("langfuse-x") is None
+    assert langfuse_environment("has space") is None
 
 
 async def test_langfuse_exporter_posts_otlp_with_auth():

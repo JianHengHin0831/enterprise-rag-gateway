@@ -51,7 +51,15 @@ class Settings(BaseSettings):
     retrieve_top_k: int = 20
     reranker: Literal["bge-reranker", "fake"] = "bge-reranker"
     rerank_model_name: str = "BAAI/bge-reranker-v2-m3"
-    rerank_top_n: int = 5
+    # Reranker device / precision; None = follow embed_device / embed_use_fp16. Lets the
+    # reranker sit on a small GPU while the embedder stays on CPU. fp16 shifts scores slightly,
+    # so re-run the threshold sweep before enabling it.
+    rerank_device: str | None = None
+    rerank_use_fp16: bool | None = None
+    # Contexts sent to the LLM. 8, not 5: in eval run 4, four multi-part questions (A-06/07/08,
+    # D-08) missed a fact whose chunk ranked just outside the Top-5. The gate uses only the
+    # top-1 score, so the calibrated threshold is unaffected.
+    rerank_top_n: int = 8
     rerank_threshold: float = 0.03  # bge-reranker-v2-m3, golden-set sweep 2026-11-19
 
     # Cache
