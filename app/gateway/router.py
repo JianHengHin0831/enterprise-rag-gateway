@@ -20,18 +20,20 @@
   degradation.
 - If no model produced an answer -> AllModelsFailedError (carries the last error).
 
-Streaming (TODO(M2), SSE item): retry/fallback is allowed only until the first chunk has
-been yielded. After that, errors propagate and the API layer emits `event: error`.
+`open_stream(task, messages)` runs the same loop, but an attempt only succeeds once the
+model's first text chunk has arrived; retry/fallback is therefore possible only before the
+first token. After that the stream is committed: errors propagate and the API layer emits
+`event: error` (never a model switch mid-answer).
 """
 
 import asyncio
 import logging
 import random
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 import yaml
 
@@ -43,6 +45,7 @@ from app.gateway.base import (
     LLMResponse,
     NonRetryableLLMError,
     ProviderTimeoutError,
+    StreamChunk,
 )
 from app.gateway.circuit_breaker import CircuitBreaker
 from app.gateway.providers.template import TemplateProvider
@@ -51,6 +54,7 @@ from app.observability.logging import log_event
 logger = logging.getLogger("rag.gateway")
 
 Task = Literal["rewrite", "answer"]
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -95,6 +99,16 @@ class RoutedResponse:
     model_key: str
     degraded: bool
     attempts: int  # provider calls made for this request, across retries and fallbacks
+
+
+@dataclass(frozen=True)
+class RoutedStream:
+    """A stream already committed to one model (its first chunk has arrived)."""
+
+    model_key: str
+    degraded: bool
+    attempts: int
+    chunks: AsyncIterator[StreamChunk]
 
 
 def load_models_config(path: Path) -> dict[str, Any]:
@@ -161,6 +175,21 @@ class ModelRouter:
         adapter not implemented yet)."""
         return [spec for spec in self.chain(task) if spec.provider in self._providers]
 
+    def spec(self, model_key: str) -> ModelSpec:
+        return self._specs[model_key]
+
+    def max_output_tokens(self, task: Task) -> int:
+        """Worst-case completion size of the task's available chain (budget reservations)."""
+        return max((s.max_output_tokens for s in self.available_chain(task)), default=0)
+
+    def fallback_model_keys(self) -> frozenset[str]:
+        """Model keys served by the static template provider (never cacheable)."""
+        return frozenset(
+            s.key
+            for s in self._specs.values()
+            if isinstance(self._providers.get(s.provider), TemplateProvider)
+        )
+
     def backoff_s(self, attempt: int, retry_after_s: float | None) -> float | None:
         """Delay before retry number `attempt + 1` (attempt is 0-based), or None when the
         provider asked us to wait longer than `max_delay_s` (then fall back instead)."""
@@ -173,6 +202,99 @@ class ModelRouter:
         return delay
 
     async def chat(self, task: Task, messages: list[ChatMessage]) -> RoutedResponse:
+        async def attempt(provider: BaseLLMProvider, spec: ModelSpec, timeout_s: float):
+            return await self._call(provider, spec, messages, timeout_s)
+
+        response, spec, degraded, attempts = await self._route(task, attempt)
+        return RoutedResponse(
+            response=response, model_key=spec.key, degraded=degraded, attempts=attempts
+        )
+
+    async def open_stream(self, task: Task, messages: list[ChatMessage]) -> RoutedStream:
+        """Pick a model by streaming from it until its first text chunk (or its end) arrives.
+
+        Everything before that point is retried / falls back exactly like `chat`, bounded by
+        the request deadline. Once a chunk is in hand the model is committed: the returned
+        `chunks` replays the buffered chunks and continues the provider stream, and any later
+        failure (including an idle gap longer than the model's `timeout_s`) is raised to the
+        caller, who must end the stream with an error rather than switch models mid-answer.
+        """
+
+        async def attempt(provider: BaseLLMProvider, spec: ModelSpec, timeout_s: float):
+            stream = provider.stream(
+                messages, model=spec.model, max_tokens=spec.max_output_tokens, timeout_s=timeout_s
+            )
+            buffered: list[StreamChunk] = []
+            try:
+                async with asyncio.timeout(timeout_s):
+                    async for chunk in stream:
+                        buffered.append(chunk)
+                        if chunk.delta or chunk.usage is not None:
+                            break
+            except TimeoutError as exc:
+                await stream.aclose()
+                raise ProviderTimeoutError(
+                    f"{spec.breaker_name}: no first token within {timeout_s:.2f}s"
+                ) from exc
+            except BaseException:
+                await stream.aclose()
+                raise
+            return stream, buffered
+
+        (stream, buffered), spec, degraded, attempts = await self._route(task, attempt)
+        return RoutedStream(
+            model_key=spec.key,
+            degraded=degraded,
+            attempts=attempts,
+            chunks=self._continue_stream(task, spec, stream, buffered),
+        )
+
+    async def _continue_stream(
+        self,
+        task: str,
+        spec: ModelSpec,
+        stream: AsyncIterator[StreamChunk],
+        buffered: list[StreamChunk],
+    ) -> AsyncIterator[StreamChunk]:
+        breaker = self.breaker(spec.key)
+        try:
+            for chunk in buffered:
+                yield chunk
+            while True:
+                try:
+                    async with asyncio.timeout(spec.timeout_s):
+                        chunk = await anext(stream)
+                except StopAsyncIteration:
+                    return
+                except TimeoutError as exc:
+                    raise ProviderTimeoutError(
+                        f"{spec.breaker_name}: stream stalled for {spec.timeout_s:.1f}s"
+                    ) from exc
+                yield chunk
+        except LLMError as exc:
+            if exc.retryable:
+                breaker.record_failure()
+            log_event(
+                logger,
+                "llm_stream_failed_after_first_token",
+                level=logging.ERROR,
+                task=task,
+                model_key=spec.key,
+                breaker=spec.breaker_name,
+                error=type(exc).__name__,
+                status_code=exc.status_code,
+            )
+            raise
+        finally:
+            await stream.aclose()  # type: ignore[attr-defined]
+
+    async def _route(
+        self,
+        task: Task,
+        attempt_fn: Callable[[BaseLLMProvider, ModelSpec, float], Awaitable[T]],
+    ) -> tuple[T, ModelSpec, bool, int]:
+        """The retry / backoff / breaker / fallback loop shared by `chat` and `open_stream`.
+        Returns (attempt result, model spec, degraded, attempts)."""
         chain = self.available_chain(task)
         if not chain:
             raise NonRetryableLLMError(f"no configured model for task '{task}'")
@@ -198,7 +320,7 @@ class ModelRouter:
                 attempts += 1
                 timeout_s = spec.timeout_s if is_local else min(spec.timeout_s, remaining)
                 try:
-                    response = await self._call(provider, spec, messages, timeout_s)
+                    result = await attempt_fn(provider, spec, timeout_s)
                 except LLMError as exc:
                     if not exc.retryable:
                         breaker.release()
@@ -232,9 +354,7 @@ class ModelRouter:
                         model_key=spec.key,
                         attempts=attempts,
                     )
-                return RoutedResponse(
-                    response=response, model_key=spec.key, degraded=degraded, attempts=attempts
-                )
+                return result, spec, degraded, attempts
 
         raise AllModelsFailedError(
             f"all models failed for task '{task}' after {attempts} attempt(s)",

@@ -183,6 +183,7 @@
     </div>
     <div class="composer-opts">
       <label><input type="checkbox" id="multiTurn" checked> Send conversation history</label>
+      <label><input type="checkbox" id="streamMode" checked> Stream the answer (SSE)</label>
       <label><input type="checkbox" id="showRaw"> Show raw response</label>
     </div>
   </footer>
@@ -330,19 +331,44 @@
 
   function badge(text, cls = "") { return `<span class="badge ${cls}">${esc(text)}</span>`; }
 
-  function metaHtml({ traceId, ms, status, data }) {
+  function metaHtml({ traceId, ms, status, data, ttft, streamError }) {
     const parts = [];
     parts.push(badge("HTTP " + status, status < 300 ? "ok" : status === 501 ? "warn" : "bad"));
+    if (streamError) parts.push(badge("stream interrupted", "bad"));
     if (data && status < 300) {
       if (data.model_used) parts.push(badge("model: " + data.model_used));
+      if (data.cost_usd != null) parts.push(badge("$" + Number(data.cost_usd).toFixed(6)));
       parts.push(badge(data.cache_hit ? "cache hit" : "cache miss", data.cache_hit ? "ok" : ""));
       if (data.refused) parts.push(badge("refused", "warn"));
       if (data.degraded) parts.push(badge("degraded (fallback)", "warn"));
       if (data.citation_mismatch) parts.push(badge("citation mismatch", "bad"));
     }
+    if (ttft != null) parts.push(`<span>first token ${ttft} ms</span>`);
     parts.push(`<span>${ms} ms</span>`);
     if (traceId) parts.push(`<span>trace <span class="mono copy" title="Click to copy" data-copy="${esc(traceId)}">${esc(traceId.slice(0, 12))}...</span></span>`);
     return parts.join("");
+  }
+
+  async function readSse(response, onEvent) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let cut;
+      while ((cut = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, cut);
+        buf = buf.slice(cut + 2);
+        let event = "message", data = "";
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("event: ")) event = line.slice(7);
+          else if (line.startsWith("data: ")) data += line.slice(6);
+        }
+        if (data) onEvent(event, JSON.parse(data));
+      }
+    }
   }
 
   async function send() {
@@ -353,9 +379,10 @@
     $("send").disabled = true;
     addUser(q);
     const el = addBot();
-    const body = { query: q, history: $("multiTurn").checked ? history.slice(-20) : [], stream: false };
+    const streaming = $("streamMode").checked;
+    const body = { query: q, history: $("multiTurn").checked ? history.slice(-20) : [], stream: streaming };
     const t0 = performance.now();
-    let status = 0, data = null, traceId = null;
+    let status = 0, data = null, traceId = null, ttft = null, streamError = null;
     try {
       const r = await fetch("/v1/chat", {
         method: "POST",
@@ -364,7 +391,26 @@
       });
       status = r.status;
       traceId = r.headers.get("X-Trace-ID");
-      data = await r.json().catch(() => null);
+      if ((r.headers.get("Content-Type") || "").startsWith("text/event-stream")) {
+        // meta -> delta* -> done | error. Errors before the first token arrive as plain JSON.
+        let text = "";
+        el.className = "msg bot";
+        el.innerHTML = '<div class="answer"></div>';
+        const answerEl = el.querySelector(".answer");
+        await readSse(r, (event, payload) => {
+          if (event === "meta" && ttft == null) ttft = Math.round(performance.now() - t0);
+          if (event === "delta") {
+            text += payload.text;
+            answerEl.innerHTML = renderAnswer(text);
+            scrollDown();
+          }
+          if (event === "done") data = payload;
+          if (event === "error") streamError = payload;
+        });
+        if (!data) data = { answer: text, trace_id: streamError?.trace_id };
+      } else {
+        data = await r.json().catch(() => null);
+      }
     } catch (e) {
       el.className = "msg bot error";
       el.innerHTML = `<div class="answer">Network error: ${esc(e.message)}</div>`;
@@ -375,7 +421,7 @@
     traceId = traceId || data?.trace_id;
     let html;
     if (status === 200 && data) {
-      el.className = "msg bot";
+      el.className = streamError ? "msg bot error" : "msg bot";
       html = `<div class="answer">${renderAnswer(data.answer || "")}</div>`;
       if (data.citations?.length) {
         html += '<ul class="citations">' + data.citations.map((c) =>
@@ -393,7 +439,7 @@ The gateway verified your JWT as <span class="mono">${esc(claims?.tenant_id ?? "
       el.className = "msg bot error";
       html = `<div class="answer">Error: ${esc(describeError(data))}</div>`;
     }
-    html += `<div class="meta">${metaHtml({ traceId, ms, status, data })}</div>`;
+    html += `<div class="meta">${metaHtml({ traceId, ms, status, data, ttft, streamError })}</div>`;
     if ($("showRaw").checked && data) html += `<pre class="raw">${esc(JSON.stringify(data, null, 2))}</pre>`;
     el.innerHTML = html;
     scrollDown();

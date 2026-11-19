@@ -41,16 +41,16 @@ Goal: ingest docs with `tenant_id / allowed_roles`; `/v1/chat` runs the minimal 
 
 ---
 
-## M2 · Multi-model gateway + breaker/fallback + budget + cache + SSE (days 4–6)
+## M2 · Multi-model gateway + breaker/fallback + budget + cache + SSE (days 4–6) ✅
 
 - [x] Provider adapters: OpenAI-compatible + Anthropic (separate `system` parameter, different usage field names)
 - [x] Error taxonomy: retryable (timeout / 429 / 5xx) vs non-retryable (400 / 401 / 403 / content refusal); non-retryable errors do not count toward the breaker
 - [x] `ModelRouter`: fallback chain from `configs/models.yaml`; exponential backoff + full jitter; honour `Retry-After`; overall deadline
 - [x] Breakers isolated per `provider:model`; response metadata includes `model_used`, `degraded`
-- [ ] **SSE streaming**: retry/fallback before the first token; after it, failures send `event: error` and end
-- [ ] `BudgetGuard`: Redis `budget:{tenant}:{YYYY-MM-DD}` reserve → settle with actual usage; over budget → 429 or downgrade to the small model
-- [ ] L1 `TTLCache(500, 60s)` + L2 Redis (1h); `index_version` stored in Redis, cached briefly in L1
-- [ ] Query rewrite (small model): only for multi-turn or short queries; on failure/timeout fall back to the raw query
+- [x] **SSE streaming**: retry/fallback before the first token; after it, failures send `event: error` and end
+- [x] `BudgetGuard`: Redis `budget:{tenant}:{YYYY-MM-DD}` reserve → settle with actual usage; over budget → 429 or downgrade to the small model
+- [x] L1 `TTLCache(500, 60s)` + L2 Redis (1h); `index_version` stored in Redis, cached briefly in L1
+- [x] Query rewrite (small model): only for multi-turn or short queries; on failure/timeout fall back to the raw query
 
 **Acceptance**
 - FakeLLM primary returns 429 five times in a row → the 6th call skips the primary and falls back, `degraded=true` (`tests/test_router_fallback.py`)

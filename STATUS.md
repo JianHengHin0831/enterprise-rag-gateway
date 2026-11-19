@@ -1,6 +1,6 @@
 # Status
 
-**Current milestone:** M2 — multi-model gateway + breaker/fallback + budget + cache + SSE
+**Current milestone:** M3 — anti-hallucination + security audit
 **Last updated:** 2026-11-19
 
 ## Done
@@ -28,17 +28,28 @@
   - Breakers keyed by `provider:model` (model keys pointing at the same upstream model share one). `degraded=true` whenever the answer comes from anything after the first available model; `model_used`, `degraded` and `attempts` are on the `llm` span, `model_used` / `degraded` on the response. Events `llm_attempt_failed`, `llm_model_skipped`, `llm_degraded` log error type + status only.
   - Acceptance `tests/test_router_fallback.py` (5x 429 -> breaker open, 6th call skips primary) unskipped and green; `tests/test_router_resilience.py`, `tests/test_anthropic_provider.py`.
 
+- M2 items 5–8 (M2 complete, all three acceptance tests green, no skipped tests left):
+  - Streaming: `OpenAICompatProvider.stream` (`stream_options.include_usage`, `[DONE]`) and `AnthropicProvider.stream` (`message_start` / `content_block_delta` text deltas / `message_delta` usage; in-stream `error` events classified) over a shared SSE reader (`_http.open_sse`). `ModelRouter.open_stream` reuses the chat retry/fallback loop, but an attempt only succeeds once the first text chunk has arrived; after that the stream is committed: an error or an idle gap longer than the model's `timeout_s` is raised, never retried or switched.
+  - `/v1/chat` with `stream: true` -> `text/event-stream`: `meta` (model, degraded, cache_hit; sent once the first token exists), `delta`*, then `done` (full ChatResponse with citations) or `error`. Failures before the first token are ordinary HTTP errors (429 / 502 / 503 JSON with trace_id). Demo console has a "Stream the answer (SSE)" toggle, shows first-token time and cost.
+  - `BudgetGuard` (`budget:{tenant}:{YYYY-MM-DD}`, 48h TTL): atomic INCRBY reserve with roll-back over the limit, settle to actual usage (refund on pre-token failure, estimate kept after a mid-stream failure). The reservation is prompt estimate + the largest `max_output_tokens` of the route; `on_exceeded: downgrade` re-reserves for the `rewrite` (small-model) route and marks the answer degraded, otherwise / if that fails -> 429 with `Retry-After` until UTC midnight. A Redis failure fails closed (503). The rewrite call reserves and settles too.
+  - `LayeredCache`: L1 `TTLCache` -> L2 Redis (backfills L1); hits come back with `cache_hit=true`, `cost_usd=0`, the current trace_id. `index_version:{tenant}` cached for `RAG_INDEX_VERSION_CACHE_TTL_S` (5 s). Redis errors are cache misses; an unreadable index_version skips the cache. Only single-turn or successfully rewritten requests are cacheable; `should_cache` keeps degraded / downgraded / template / citation-mismatch answers out.
+  - `QueryRewriter` (route `rewrite`, `rewrite_v1` prompt): multi-turn requests and queries under `RAG_REWRITE_MIN_WORDS` (4) words; LLM error, `RAG_REWRITE_TIMEOUT_S` (3 s) timeout, an empty / oversized output or no budget -> raw query. The rewritten query drives retrieval, the answer prompt and the cache key.
+  - `ChatResponse.cost_usd` (from `configs/models.yaml` prices; null while they are null). `chat_response` log adds `cache_hit`, `rewritten`, `downgraded`, `cost_usd`.
+  - Tests: `tests/test_streaming.py`, `tests/test_m2_pipeline.py` (cache, budget incl. 20 concurrent requests at the limit, downgrade, rewrite, SSE route), cache acceptance in `tests/test_router_fallback.py`.
+
 ## In progress
 - (none)
 
 ## Next
-- M2 items 5–8: SSE streaming (provider `stream` for both adapters + router pre-first-token fallback), budget, L1/L2 cache, query rewrite.
+- M3: reranker + low-score refusal gate (calibrated on the golden set), post-stream citation check with disclaimer, audit log, `rag_request_summary` event.
 
 ## Known gaps
 - Claude Sonnet / Haiku 5.5 think adaptively by default and thinking tokens count toward `max_tokens`; with `max_output_tokens: 1024` / `256` a long thought could truncate the answer. The adapter sends no `thinking` / effort setting yet; revisit if answers come back cut off (`finish_reason == "max_tokens"`).
 - Content refusals are raised (502), not routed to another model.
 - No reranker / low-score gate yet (M3): the first 5 fused hits go to the LLM; only an empty retrieval is refused without an LLM call.
-- `history` is ignored until query rewrite exists (M2).
+- Rewrite runs before the cache lookup (roadmap order), so a multi-turn cache hit still pays for one small-model call.
+- The budget estimate uses tiktoken `o200k_base`; for Claude / Qwen it can undercount, so actual spend can exceed the limit by the estimation error of the requests in flight. Measured `estimated vs actual` lands in M3's `rag_request_summary`.
+- Streaming answers are checked for citations only after the stream ends (the `done` event); the disclaimer is M3.
 - The Docker image installs without the `[embed]` extra, so `RAG_EMBEDDER=bge-m3` only works for a locally run API; the full-stack image needs a CPU-torch install step.
-- Reranker, budget and L1/L2 cache are `TODO(Mx)` stubs.
+- Reranker is a `TODO(M3)` stub.
 - Prices in `configs/models.yaml` are `null`; fill them in from each provider's current price page.

@@ -68,6 +68,9 @@ class ChatResponse(BaseModel):
     model_used: str | None = None
     degraded: bool = False
     citation_mismatch: bool = False
+    # USD for this request's answer call; 0 for cache hits and refusals without an LLM call,
+    # None while the model's price is not configured in configs/models.yaml.
+    cost_usd: float | None = None
 
 
 class RetrievedChunk(BaseModel):

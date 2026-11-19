@@ -3,8 +3,12 @@
 Maps transport failures and HTTP statuses onto the error taxonomy in `app/gateway/base.py`:
 timeouts -> ProviderTimeoutError, other transport errors -> RetryableLLMError, HTTP >= 400 via
 `error_from_status` (with `Retry-After`), a non-JSON body -> NonRetryableLLMError.
+`open_sse` does the same for streaming (Server-Sent Events) responses.
 """
 
+import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -66,3 +70,49 @@ async def post_json(
         return r.json()
     except ValueError as exc:
         raise NonRetryableLLMError(f"{provider}: malformed response") from exc
+
+
+@asynccontextmanager
+async def open_sse(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    provider: str,
+    body: dict[str, Any],
+    headers: dict[str, str],
+    timeout_s: float,
+) -> AsyncIterator[AsyncIterator[dict[str, Any]]]:
+    """POST a streaming request and yield an iterator over the JSON payloads of its SSE
+    `data:` lines (`[DONE]` ends it). Opening raises the same taxonomy as `post_json`; a
+    failure while reading the body is mapped too, so callers only ever see LLMError."""
+    try:
+        async with client.stream("POST", url, json=body, headers=headers, timeout=timeout_s) as r:
+            if r.status_code >= 400:
+                text = (await r.aread()).decode("utf-8", errors="replace")
+                raise error_from_status(
+                    r.status_code,
+                    f"{provider}: HTTP {r.status_code}: {text[:MAX_ERROR_BODY]}",
+                    parse_retry_after(r.headers.get("Retry-After")),
+                )
+            yield _sse_payloads(r, provider)
+    except httpx.TimeoutException as exc:
+        raise ProviderTimeoutError(f"{provider}: stream timeout after {timeout_s}s") from exc
+    except httpx.TransportError as exc:
+        raise RetryableLLMError(f"{provider}: {type(exc).__name__}") from exc
+
+
+async def _sse_payloads(r: httpx.Response, provider: str) -> AsyncIterator[dict[str, Any]]:
+    async for line in r.aiter_lines():
+        if not line.startswith("data:"):
+            continue  # `event:` names, comments, keep-alives, blank separators
+        data = line[5:].strip()
+        if not data:
+            continue
+        if data == "[DONE]":
+            return
+        try:
+            payload = json.loads(data)
+        except ValueError as exc:
+            raise NonRetryableLLMError(f"{provider}: malformed stream event") from exc
+        if isinstance(payload, dict):
+            yield payload

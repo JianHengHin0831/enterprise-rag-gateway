@@ -2,10 +2,11 @@
 
 Non-streaming `chat` uses the shared httpx.AsyncClient:
   POST {base_url}/chat/completions -> choices[0].message.content + usage.
+Streaming `stream` sends `stream: true` + `stream_options.include_usage` and reads SSE
+`data:` lines until `[DONE]`: text in `choices[0].delta.content`, usage in the last event
+(which has empty `choices`).
 Error mapping: see `app/gateway/providers/_http.py`; `finish_reason == "content_filter"`
 -> ContentRefusalError, malformed bodies -> NonRetryableLLMError.
-
-TODO(M2): implement `stream` (SSE `data:` lines, `[DONE]`, `stream_options.include_usage`).
 """
 
 from collections.abc import AsyncIterator
@@ -21,7 +22,7 @@ from app.gateway.base import (
     StreamChunk,
     Usage,
 )
-from app.gateway.providers._http import parse_retry_after, post_json
+from app.gateway.providers._http import open_sse, parse_retry_after, post_json
 
 __all__ = ["OpenAICompatProvider", "parse_retry_after"]
 
@@ -79,7 +80,7 @@ class OpenAICompatProvider(BaseLLMProvider):
             finish_reason=finish_reason,
         )
 
-    def stream(
+    async def stream(
         self,
         messages: list[ChatMessage],
         *,
@@ -88,4 +89,42 @@ class OpenAICompatProvider(BaseLLMProvider):
         temperature: float = 0.0,
         timeout_s: float = 30.0,
     ) -> AsyncIterator[StreamChunk]:
-        raise NotImplementedError("OpenAICompatProvider.stream — milestone M2")
+        body = {
+            "model": model,
+            "messages": [m.model_dump() for m in messages],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        usage: Usage | None = None
+        finish_reason: str | None = None
+        async with open_sse(
+            self._client,
+            f"{self._base_url}/chat/completions",
+            provider=self.name,
+            body=body,
+            headers={"Authorization": f"Bearer {self._api_key}"},
+            timeout_s=timeout_s,
+        ) as events:
+            async for event in events:
+                delta = ""
+                try:
+                    if event.get("usage"):
+                        u = event["usage"]
+                        usage = Usage(
+                            prompt_tokens=int(u.get("prompt_tokens") or 0),
+                            completion_tokens=int(u.get("completion_tokens") or 0),
+                        )
+                    choices = event.get("choices") or []
+                    if choices:
+                        choice = choices[0]
+                        delta = (choice.get("delta") or {}).get("content") or ""
+                        finish_reason = choice.get("finish_reason") or finish_reason
+                except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
+                    raise NonRetryableLLMError(f"{self.name}: malformed stream event") from exc
+                if finish_reason == "content_filter":
+                    raise ContentRefusalError(f"{self.name}: response blocked by content filter")
+                if delta:
+                    yield StreamChunk(delta=delta)
+        yield StreamChunk(usage=usage or Usage(), finish_reason=finish_reason)

@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     l1_cache_size: int = 500
     l1_cache_ttl_s: int = 60
     l2_cache_ttl_s: int = 3600
+    index_version_cache_ttl_s: float = 5.0  # how fast a re-ingest invalidates cached answers
+
+    # Query rewrite (route `rewrite`): multi-turn requests and queries shorter than
+    # `rewrite_min_words` words; on error or after `rewrite_timeout_s` the raw query is used.
+    rewrite_min_words: int = 4
+    rewrite_timeout_s: float = 3.0
 
     # Audit
     audit_log_path: Path = Path("logs/audit.jsonl")

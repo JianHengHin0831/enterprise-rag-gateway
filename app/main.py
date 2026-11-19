@@ -1,29 +1,34 @@
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 
+from app.cache.layered import LayeredCache
 from app.config import Settings, get_settings
+from app.cost.budget import BudgetExceededError, BudgetGuard
 from app.gateway.base import AllModelsFailedError, LLMError
 from app.gateway.factory import build_providers
 from app.gateway.router import ModelRouter, load_models_config
 from app.observability.logging import configure_logging, log_event
 from app.observability.trace import current_trace_id, start_trace
 from app.rag.embeddings import Embedder, build_embedder
-from app.rag.pipeline import RagPipeline
+from app.rag.pipeline import RagPipeline, StreamEvent
 from app.rag.prompts import load_prompt
 from app.rag.retriever import HybridRetriever
+from app.rag.rewrite import QueryRewriter
 from app.schemas import ChatRequest, ChatResponse, DevTokenRequest, DevTokenResponse, Identity
 from app.security.auth import get_identity, issue_token
 from app.security.injection import screen_text
@@ -51,12 +56,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         config=(models_config := load_models_config(settings.models_config_path)),
         providers=build_providers(models_config, settings, app.state.http),
     )
+    budget = BudgetGuard.from_config(app.state.redis, models_config)
     app.state.pipeline = RagPipeline(
         retriever=HybridRetriever(app.state.qdrant, embedder, settings.qdrant_collection),
         router=router,
         prompt=load_prompt(settings.prompts_dir, "rag_qa", settings.answer_prompt_version),
         retrieve_top_k=settings.retrieve_top_k,
         context_top_n=settings.rerank_top_n,
+        budget=budget,
+        cache=LayeredCache(
+            app.state.redis,
+            l1_size=settings.l1_cache_size,
+            l1_ttl_s=settings.l1_cache_ttl_s,
+            l2_ttl_s=settings.l2_cache_ttl_s,
+            index_version_ttl_s=settings.index_version_cache_ttl_s,
+        ),
+        rewriter=QueryRewriter(
+            router=router,
+            prompt=load_prompt(settings.prompts_dir, "rewrite", settings.rewrite_prompt_version),
+            timeout_s=settings.rewrite_timeout_s,
+            min_words=settings.rewrite_min_words,
+            budget=budget,
+        ),
     )
     # Load the embedding model in the background so the first request does not pay for it.
     warmup = asyncio.create_task(_warm_up(embedder))
@@ -171,7 +192,11 @@ async def chat(
     body: ChatRequest,
     identity: Annotated[Identity, Depends(get_identity)],
     pipeline: Annotated[RagPipeline, Depends(get_pipeline)],
-) -> ChatResponse | JSONResponse:
+) -> ChatResponse | JSONResponse | StreamingResponse:
+    """`stream: false` -> one JSON ChatResponse. `stream: true` -> text/event-stream with
+    `meta` (model chosen, sent once the first token exists), `delta` (answer text), then
+    `done` (the full ChatResponse) or `error`. Failures before the first token are plain HTTP
+    errors, exactly as in the non-streaming case."""
     risk = screen_text(body.query)
     log_event(
         logger,
@@ -182,14 +207,65 @@ async def chat(
         query=body.query,  # masked by the JSON formatter
         query_risk=risk,
         turns=len(body.history),
+        stream=body.stream,
     )
+    if not body.stream:
+        try:
+            return await pipeline.answer(body, identity)
+        except Exception as exc:
+            return _error_response(exc)
+
+    events = pipeline.stream(body, identity)
     try:
-        return await pipeline.answer(body, identity)
-    except AllModelsFailedError as exc:
+        first = await anext(events)
+    except Exception as exc:
+        return _error_response(exc)
+    return StreamingResponse(
+        _sse(first, events),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _sse(first: StreamEvent, events: AsyncIterator[StreamEvent]) -> AsyncIterator[str]:
+    try:
+        yield _sse_frame(first.kind, first.data)
+        async for event in events:
+            yield _sse_frame(event.kind, event.data)
+    except Exception as exc:  # noqa: BLE001 - after the first token: report and end
+        log_event(
+            logger,
+            "chat_stream_failed",
+            level=logging.ERROR,
+            error=type(exc).__name__,
+            status_code=getattr(exc, "status_code", None),
+        )
+        yield _sse_frame(
+            "error",
+            {"trace_id": current_trace_id(), "detail": "the answer stream was interrupted"},
+        )
+    finally:
+        await events.aclose()  # type: ignore[attr-defined]
+
+
+def _sse_frame(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _error_response(exc: Exception) -> JSONResponse:
+    """Map a pipeline failure to an HTTP error carrying the trace_id; re-raise the unknown."""
+    if isinstance(exc, BudgetExceededError):
+        log_event(logger, "chat_rejected", level=logging.WARNING, reason="budget")
+        now = datetime.now(UTC)
+        tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        response = _error(status.HTTP_429_TOO_MANY_REQUESTS, "the daily token budget is exhausted")
+        response.headers["Retry-After"] = str(int((tomorrow - now).total_seconds()) + 1)
+        return response
+    if isinstance(exc, AllModelsFailedError):
         # Retries and the whole fallback chain are exhausted: a transient outage.
         log_event(logger, "chat_failed", level=logging.ERROR, stage="llm", error=type(exc).__name__)
         return _error(status.HTTP_503_SERVICE_UNAVAILABLE, "all language models are unavailable")
-    except LLMError as exc:
+    if isinstance(exc, LLMError):
         # Non-retryable (bad request, auth, content refusal): no fallback was attempted.
         log_event(
             logger,
@@ -200,9 +276,14 @@ async def chat(
             status_code=exc.status_code,
         )
         return _error(status.HTTP_502_BAD_GATEWAY, "the language model call failed")
-    except (ResponseHandlingException, UnexpectedResponse, httpx.HTTPError) as exc:
+    if isinstance(exc, (ResponseHandlingException, UnexpectedResponse, httpx.HTTPError)):
         log_event(logger, "chat_failed", level=logging.ERROR, stage="retrieve", error=str(exc))
         return _error(status.HTTP_503_SERVICE_UNAVAILABLE, "the knowledge base is unavailable")
+    if isinstance(exc, RedisError):
+        # The budget cannot be checked: fail closed rather than spend without a limit.
+        log_event(logger, "chat_failed", level=logging.ERROR, stage="redis", error=str(exc))
+        return _error(status.HTTP_503_SERVICE_UNAVAILABLE, "the budget service is unavailable")
+    raise exc
 
 
 def _error(code: int, detail: str) -> JSONResponse:
