@@ -62,7 +62,9 @@ models:
 
 # Ordered fallback chains per task. First entry = primary; anything after it => degraded=true.
 routes:
-  rewrite: [qwen-turbo, claude-haiku]
+  # claude-haiku first: measured with scripts/bench_rewrite.py via OpenRouter (2026-11-19,
+  # 5 calls each) p50 ~1.0 s / max ~1.2 s, vs ~2.8-3.3 s p50 for qwen3.8-flash / qwen3.7-flash.
+  rewrite: [claude-haiku, qwen-turbo]
   answer: [claude-sonnet, qwen-plus, fallback-template]
 
 circuit_breaker:

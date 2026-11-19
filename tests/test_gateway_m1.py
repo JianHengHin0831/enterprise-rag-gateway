@@ -115,4 +115,4 @@ async def test_openrouter_key_alone_serves_every_remote_model(settings, models_c
         "qwen-plus",
         "fallback-template",
     ]
-    assert [m.key for m in router.available_chain("rewrite")] == ["qwen-turbo", "claude-haiku"]
+    assert [m.key for m in router.available_chain("rewrite")] == ["claude-haiku", "qwen-turbo"]

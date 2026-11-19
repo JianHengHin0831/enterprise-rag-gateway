@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     # Query rewrite (route `rewrite`): multi-turn requests and queries shorter than
     # `rewrite_min_words` words; on error or after `rewrite_timeout_s` the raw query is used.
     rewrite_min_words: int = 4
-    rewrite_timeout_s: float = 3.0
+    rewrite_timeout_s: float = 6.0  # rewrite via OpenRouter takes ~3 s; 3.0 timed out
 
     # Audit
     audit_log_path: Path = Path("logs/audit.jsonl")
