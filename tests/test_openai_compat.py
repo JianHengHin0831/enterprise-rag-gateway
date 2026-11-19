@@ -126,3 +126,25 @@ async def test_content_filter_finish_reason_is_a_non_retryable_refusal():
         with pytest.raises(ContentRefusalError) as info:
             await provider.chat(MSGS, model="m", max_tokens=8)
     assert info.value.retryable is False
+
+
+@pytest.mark.parametrize(
+    ("body", "error_type", "status"),
+    [
+        ({"error": {"code": 429, "message": "upstream rate limited"}}, RateLimitedError, 429),
+        ({"error": {"code": 400, "message": "bad model"}}, NonRetryableLLMError, 400),
+        ({"error": {"code": "weird", "message": "?"}}, RetryableLLMError, 502),
+        (
+            {"choices": [{"message": {"content": ""}, "finish_reason": "error"}]},
+            RetryableLLMError,
+            502,
+        ),
+    ],
+)
+async def test_error_inside_a_200_body_is_classified(body, error_type, status):
+    """Gateways like OpenRouter can return an upstream failure with HTTP 200."""
+    provider, client = _provider(lambda _: httpx.Response(200, json=body))
+    async with client:
+        with pytest.raises(error_type) as info:
+            await provider.chat(MSGS, model="m", max_tokens=8)
+    assert info.value.status_code == status

@@ -7,6 +7,7 @@ from pydantic import SecretStr
 from qdrant_client import AsyncQdrantClient
 
 from app.config import Settings
+from app.gateway.router import load_models_config
 from app.rag.embeddings import FakeEmbedder
 from app.rag.ingest import Chunk, load_corpus, upsert
 from app.schemas import Identity, Role
@@ -15,6 +16,24 @@ from app.security.auth import issue_token
 ROOT = Path(__file__).resolve().parents[1]
 MOCK_DOCS = ROOT / "data" / "mock_docs"
 TEST_COLLECTION = "test_chunks"
+
+# Direct-vendor layout: Claude models on `anthropic`, Qwen models on `dashscope`, with the
+# vendors' own model ids. Router / pipeline tests use it with a single FakeLLM named
+# "dashscope", so the Claude models are unavailable and qwen-plus / qwen-turbo lead their
+# chains. Routes, retry, breaker and budget settings still come from configs/models.yaml.
+_DIRECT_VENDOR_MODELS = {
+    "claude-sonnet": ("anthropic", "claude-sonnet-5-5"),
+    "claude-haiku": ("anthropic", "claude-haiku-5-5"),
+    "qwen-plus": ("dashscope", "qwen-plus"),
+    "qwen-turbo": ("dashscope", "qwen-turbo"),
+}
+
+
+def direct_vendor_models_config(path: Path) -> dict:
+    cfg = load_models_config(path)
+    for key, (provider, model) in _DIRECT_VENDOR_MODELS.items():
+        cfg["models"][key] = {**cfg["models"][key], "provider": provider, "model": model}
+    return cfg
 
 
 @pytest.fixture

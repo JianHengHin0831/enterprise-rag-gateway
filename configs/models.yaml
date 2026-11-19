@@ -1,8 +1,17 @@
 # Model registry, routing chains, pricing, resilience settings.
-# Prices are USD per 1M tokens. They are null on purpose: fill in from the provider's
-# current official price page. cost_usd is reported as null while a price is null.
+# Prices are USD per 1M tokens, as billed by OpenRouter (https://openrouter.ai/api/v1/models,
+# checked 2026-11-19). Re-check them when you change a model; a null price reports
+# cost_usd as null.
+#
+# Every model goes through OpenRouter (one key: RAG_OPENROUTER_API_KEY). To call a vendor
+# directly instead, point the model's `provider` at `anthropic` / `dashscope` and use that
+# vendor's model id (e.g. claude-sonnet-5-5, qwen-plus).
 
 providers:
+  openrouter:
+    type: openai_compat
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: RAG_OPENROUTER_API_KEY
   anthropic:
     type: anthropic
     base_url: https://api.anthropic.com
@@ -16,31 +25,31 @@ providers:
 
 models:
   claude-sonnet:
-    provider: anthropic
-    model: claude-sonnet-5-5
-    input_per_mtok: null
-    output_per_mtok: null
+    provider: openrouter
+    model: anthropic/claude-sonnet-5.5
+    input_per_mtok: 2.0
+    output_per_mtok: 10.0
     timeout_s: 30
     max_output_tokens: 1024
   claude-haiku:
-    provider: anthropic
-    model: claude-haiku-5-5
-    input_per_mtok: null
-    output_per_mtok: null
+    provider: openrouter
+    model: anthropic/claude-haiku-5.5
+    input_per_mtok: 0.1
+    output_per_mtok: 0.5
     timeout_s: 10
     max_output_tokens: 256
   qwen-plus:
-    provider: dashscope
-    model: qwen-plus
-    input_per_mtok: null
-    output_per_mtok: null
+    provider: openrouter
+    model: qwen/qwen-plus
+    input_per_mtok: 0.26
+    output_per_mtok: 0.78
     timeout_s: 30
     max_output_tokens: 1024
   qwen-turbo:
-    provider: dashscope
-    model: qwen-turbo
-    input_per_mtok: null
-    output_per_mtok: null
+    provider: openrouter
+    model: qwen/qwen3.8-flash  # OpenRouter has no qwen-turbo; closest small, cheap Qwen
+    input_per_mtok: 0.15
+    output_per_mtok: 0.47
     timeout_s: 8
     max_output_tokens: 256
   fallback-template:

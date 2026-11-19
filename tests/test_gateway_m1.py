@@ -11,6 +11,7 @@ from app.gateway.providers.fake import FakeLLM
 from app.gateway.providers.openai_compat import OpenAICompatProvider
 from app.gateway.providers.template import FALLBACK_TEXT, TemplateProvider
 from app.gateway.router import ModelRouter, load_models_config
+from tests.conftest import direct_vendor_models_config
 
 MSGS = [ChatMessage(role="user", content="hi")]
 
@@ -18,6 +19,11 @@ MSGS = [ChatMessage(role="user", content="hi")]
 @pytest.fixture
 def models_config(settings):
     return load_models_config(settings.models_config_path)
+
+
+@pytest.fixture
+def direct_config(settings):
+    return direct_vendor_models_config(settings.models_config_path)
 
 
 def test_api_key_lookup(settings):
@@ -51,10 +57,10 @@ async def test_without_keys_only_template_is_registered(settings, models_config)
         assert set(build_providers(models_config, settings, http)) == {"local"}
 
 
-async def test_router_uses_first_configured_model_of_chain(models_config):
+async def test_router_uses_first_configured_model_of_chain(direct_config):
     llm = FakeLLM("dashscope", default="Answer [1]")
     router = ModelRouter(
-        config=models_config, providers={"dashscope": llm, "local": TemplateProvider()}
+        config=direct_config, providers={"dashscope": llm, "local": TemplateProvider()}
     )
     assert [m.key for m in router.available_chain("answer")] == [
         "qwen-plus",
@@ -79,14 +85,14 @@ async def test_router_without_any_model_raises(models_config):
         await router.chat("answer", MSGS)
 
 
-async def test_router_falls_back_to_template_after_retries(models_config):
+async def test_router_falls_back_to_template_after_retries(direct_config):
     llm = FakeLLM("dashscope", script=[RetryableLLMError("503", status_code=503)] * 3)
 
     async def no_sleep(_: float) -> None:
         return None
 
     router = ModelRouter(
-        config=models_config,
+        config=direct_config,
         providers={"dashscope": llm, "local": TemplateProvider()},
         sleep=no_sleep,
     )
@@ -94,3 +100,19 @@ async def test_router_falls_back_to_template_after_retries(models_config):
     assert llm.calls == ["qwen-plus"] * 3
     assert result.model_key == "fallback-template" and result.degraded
     assert result.attempts == 4
+
+
+async def test_openrouter_key_alone_serves_every_remote_model(settings, models_config):
+    s = settings.model_copy(update={"openrouter_api_key": SecretStr("sk-or-test")})
+    async with httpx.AsyncClient() as http:
+        providers = build_providers(models_config, s, http)
+    assert set(providers) == {"openrouter", "local"}
+    assert isinstance(providers["openrouter"], OpenAICompatProvider)
+    assert providers["openrouter"]._base_url == "https://openrouter.ai/api/v1"
+    router = ModelRouter(config=models_config, providers=providers)
+    assert [m.key for m in router.available_chain("answer")] == [
+        "claude-sonnet",
+        "qwen-plus",
+        "fallback-template",
+    ]
+    assert [m.key for m in router.available_chain("rewrite")] == ["qwen-turbo", "claude-haiku"]

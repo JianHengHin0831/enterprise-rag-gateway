@@ -49,19 +49,18 @@ async def test_second_identical_question_hits_cache_with_zero_cost(settings, ind
 
     from app.cache.layered import LayeredCache
     from app.gateway.providers.template import TemplateProvider
-    from app.gateway.router import load_models_config
     from app.rag.embeddings import FakeEmbedder
     from app.rag.pipeline import RagPipeline
     from app.rag.prompts import load_prompt
     from app.rag.retriever import HybridRetriever
     from app.schemas import ChatRequest
-    from tests.conftest import TEST_COLLECTION
+    from tests.conftest import TEST_COLLECTION, direct_vendor_models_config
 
     llm = FakeLLM("dashscope", default="P6 ranges from 8,300 to 12,600 USD per month [1].")
     pipeline = RagPipeline(
         retriever=HybridRetriever(indexed_qdrant, FakeEmbedder(), TEST_COLLECTION),
         router=ModelRouter(
-            config=load_models_config(settings.models_config_path),
+            config=direct_vendor_models_config(settings.models_config_path),
             providers={"dashscope": llm, "local": TemplateProvider()},
         ),
         prompt=load_prompt(settings.prompts_dir, "rag_qa", 1),

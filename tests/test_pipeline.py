@@ -7,14 +7,14 @@ import pytest
 from app.gateway.base import ChatMessage
 from app.gateway.providers.fake import FakeLLM
 from app.gateway.providers.template import TemplateProvider
-from app.gateway.router import ModelRouter, load_models_config
+from app.gateway.router import ModelRouter
 from app.observability.trace import start_trace
 from app.rag.embeddings import FakeEmbedder
 from app.rag.pipeline import RagPipeline
 from app.rag.prompts import load_prompt
 from app.rag.retriever import HybridRetriever
 from app.schemas import ChatRequest
-from tests.conftest import TEST_COLLECTION
+from tests.conftest import TEST_COLLECTION, direct_vendor_models_config
 
 
 class RecordingLLM(FakeLLM):
@@ -29,7 +29,7 @@ class RecordingLLM(FakeLLM):
 
 def make_pipeline(settings, retriever, llm) -> RagPipeline:
     router = ModelRouter(
-        config=load_models_config(settings.models_config_path),
+        config=direct_vendor_models_config(settings.models_config_path),
         providers={"dashscope": llm, "local": TemplateProvider()},
     )
     return RagPipeline(
@@ -107,7 +107,7 @@ async def test_model_refusal_is_flagged_and_drops_citations(settings, retriever,
 
 async def test_template_fallback_is_marked_degraded(settings, retriever, intern):
     router = ModelRouter(
-        config=load_models_config(settings.models_config_path),
+        config=direct_vendor_models_config(settings.models_config_path),
         providers={"local": TemplateProvider()},
     )
     pipeline = RagPipeline(

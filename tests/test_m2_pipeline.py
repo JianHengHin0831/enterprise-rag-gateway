@@ -23,7 +23,7 @@ from app.gateway.base import (
 )
 from app.gateway.providers.fake import FakeLLM
 from app.gateway.providers.template import TemplateProvider
-from app.gateway.router import ModelRouter, load_models_config
+from app.gateway.router import ModelRouter
 from app.main import app, get_pipeline
 from app.observability.trace import start_trace
 from app.rag.embeddings import FakeEmbedder
@@ -32,7 +32,7 @@ from app.rag.prompts import load_prompt
 from app.rag.retriever import HybridRetriever
 from app.rag.rewrite import QueryRewriter
 from app.schemas import ChatRequest, ChatTurn, Identity, Role
-from tests.conftest import TEST_COLLECTION
+from tests.conftest import TEST_COLLECTION, direct_vendor_models_config
 from tests.test_streaming import parse_sse
 
 QUESTION = "What is the P6 salary band at Acme?"
@@ -60,7 +60,7 @@ class CountingLLM(FakeLLM):
 
 
 def _config(settings, **budget) -> dict:
-    cfg = load_models_config(settings.models_config_path)
+    cfg = direct_vendor_models_config(settings.models_config_path)
     cfg["retry"] = {**cfg["retry"], "base_delay_s": 0, "max_delay_s": 0}
     if budget:
         cfg["budget"] = {**cfg["budget"], **budget}

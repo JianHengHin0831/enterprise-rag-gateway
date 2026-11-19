@@ -97,6 +97,26 @@ async def test_openai_stream_content_filter_is_a_refusal():
             await _collect(provider.stream(MSGS, model="m", max_tokens=8))
 
 
+async def test_openai_mid_stream_error_is_raised_not_a_truncated_answer():
+    body = _sse(
+        {"choices": [{"delta": {"content": "Partial "}}]},
+        {
+            "error": {"code": 502, "message": "upstream died"},
+            "choices": [{"delta": {"content": ""}, "finish_reason": "error"}],
+        },
+        done=True,
+    )
+    provider, client = _openai(
+        lambda _: httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+    )
+    seen: list[str] = []
+    async with client:
+        with pytest.raises(RetryableLLMError) as info:
+            async for chunk in provider.stream(MSGS, model="m", max_tokens=8):
+                seen.append(chunk.delta)
+    assert seen == ["Partial "] and info.value.status_code == 502
+
+
 async def test_openai_stream_malformed_event_is_non_retryable():
     provider, client = _openai(lambda _: httpx.Response(200, content=b"data: {nope\n\n"))
     async with client:

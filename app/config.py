@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr | None = None
     dashscope_api_key: SecretStr | None = None
     openai_api_key: SecretStr | None = None
+    openrouter_api_key: SecretStr | None = None
     # Optional per-provider base_url override, e.g.
     # RAG_PROVIDER_BASE_URLS='{"dashscope": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"}'
     provider_base_urls: dict[str, str] = {}

@@ -14,7 +14,7 @@ from app.config import get_settings
 from app.gateway.base import NonRetryableLLMError, RetryableLLMError
 from app.gateway.providers.fake import FakeLLM
 from app.gateway.providers.template import TemplateProvider
-from app.gateway.router import ModelRouter, load_models_config
+from app.gateway.router import ModelRouter
 from app.main import app, get_pipeline
 from app.observability.logging import JsonFormatter
 from app.rag.embeddings import FakeEmbedder
@@ -22,7 +22,7 @@ from app.rag.pipeline import RagPipeline
 from app.rag.prompts import load_prompt
 from app.rag.retriever import HybridRetriever
 from app.schemas import Role
-from tests.conftest import TEST_COLLECTION
+from tests.conftest import TEST_COLLECTION, direct_vendor_models_config
 
 SALARY_Q = "What is the P6 salary band and how is severance calculated?"
 
@@ -43,7 +43,7 @@ def _pipeline(settings, qdrant, llm) -> RagPipeline:
     return RagPipeline(
         retriever=HybridRetriever(qdrant, FakeEmbedder(), TEST_COLLECTION),
         router=ModelRouter(
-            config=load_models_config(settings.models_config_path),
+            config=direct_vendor_models_config(settings.models_config_path),
             providers={"dashscope": llm, "local": TemplateProvider()},
         ),
         prompt=load_prompt(settings.prompts_dir, "rag_qa", 1),

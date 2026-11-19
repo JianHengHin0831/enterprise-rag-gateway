@@ -1,4 +1,4 @@
-"""OpenAI-compatible Chat Completions adapter (DashScope, SiliconFlow, OpenAI, vLLM...).
+"""OpenAI-compatible Chat Completions adapter (OpenRouter, DashScope, OpenAI, vLLM...).
 
 Non-streaming `chat` uses the shared httpx.AsyncClient:
   POST {base_url}/chat/completions -> choices[0].message.content + usage.
@@ -6,7 +6,10 @@ Streaming `stream` sends `stream: true` + `stream_options.include_usage` and rea
 `data:` lines until `[DONE]`: text in `choices[0].delta.content`, usage in the last event
 (which has empty `choices`).
 Error mapping: see `app/gateway/providers/_http.py`; `finish_reason == "content_filter"`
--> ContentRefusalError, malformed bodies -> NonRetryableLLMError.
+-> ContentRefusalError, malformed bodies -> NonRetryableLLMError. Gateways such as
+OpenRouter can report an upstream failure inside a 200 body or mid-stream (a top-level
+`error` object and/or `finish_reason == "error"`); that is classified by its code like an
+HTTP status (unknown code -> 502, retryable) instead of passing as a truncated answer.
 """
 
 from collections.abc import AsyncIterator
@@ -17,14 +20,29 @@ from app.gateway.base import (
     BaseLLMProvider,
     ChatMessage,
     ContentRefusalError,
+    LLMError,
     LLMResponse,
     NonRetryableLLMError,
     StreamChunk,
     Usage,
+    error_from_status,
 )
 from app.gateway.providers._http import open_sse, parse_retry_after, post_json
 
 __all__ = ["OpenAICompatProvider", "parse_retry_after"]
+
+
+def _body_error(provider: str, payload: dict, finish_reason: str | None) -> LLMError | None:
+    """An upstream error reported inside a successful HTTP response, or None."""
+    err = payload.get("error")
+    if not err and finish_reason != "error":
+        return None
+    code = err.get("code") if isinstance(err, dict) else None
+    try:
+        status = int(code)
+    except (TypeError, ValueError):
+        status = 502
+    return error_from_status(status, f"{provider}: upstream error {status}")
 
 
 class OpenAICompatProvider(BaseLLMProvider):
@@ -64,8 +82,12 @@ class OpenAICompatProvider(BaseLLMProvider):
             usage = data.get("usage") or {}
             finish_reason = choice.get("finish_reason")
         except (KeyError, IndexError, TypeError, AttributeError) as exc:
+            if error := _body_error(self.name, data, None):
+                raise error from exc
             raise NonRetryableLLMError(f"{self.name}: malformed response") from exc
 
+        if error := _body_error(self.name, data, finish_reason):
+            raise error
         if finish_reason == "content_filter":
             raise ContentRefusalError(f"{self.name}: response blocked by content filter")
 
@@ -123,6 +145,8 @@ class OpenAICompatProvider(BaseLLMProvider):
                         finish_reason = choice.get("finish_reason") or finish_reason
                 except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
                     raise NonRetryableLLMError(f"{self.name}: malformed stream event") from exc
+                if error := _body_error(self.name, event, finish_reason):
+                    raise error
                 if finish_reason == "content_filter":
                     raise ContentRefusalError(f"{self.name}: response blocked by content filter")
                 if delta:

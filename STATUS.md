@@ -36,6 +36,7 @@
   - `QueryRewriter` (route `rewrite`, `rewrite_v1` prompt): multi-turn requests and queries under `RAG_REWRITE_MIN_WORDS` (4) words; LLM error, `RAG_REWRITE_TIMEOUT_S` (3 s) timeout, an empty / oversized output or no budget -> raw query. The rewritten query drives retrieval, the answer prompt and the cache key.
   - `ChatResponse.cost_usd` (from `configs/models.yaml` prices; null while they are null). `chat_response` log adds `cache_hit`, `rewritten`, `downgraded`, `cost_usd`.
   - Tests: `tests/test_streaming.py`, `tests/test_m2_pipeline.py` (cache, budget incl. 20 concurrent requests at the limit, downgrade, rewrite, SSE route), cache acceptance in `tests/test_router_fallback.py`.
+- OpenRouter as the default provider: `configs/models.yaml` routes all four remote models through `openrouter` (OpenAI-compatible adapter, one key `RAG_OPENROUTER_API_KEY`; OpenRouter prices filled in). `qwen-turbo` maps to `qwen/qwen3.8-flash` (OpenRouter has no qwen-turbo). Upstream errors reported inside a 200 body or mid-stream (`error` object / `finish_reason: "error"`) are now classified instead of passing as a truncated answer. Router / pipeline tests keep the direct-vendor layout via `tests/conftest.py::direct_vendor_models_config`.
 
 ## In progress
 - (none)
@@ -49,6 +50,7 @@
 - No reranker / low-score gate yet (M3): the first 5 fused hits go to the LLM; only an empty retrieval is refused without an LLM call.
 - Rewrite runs before the cache lookup (roadmap order), so a multi-turn cache hit still pays for one small-model call.
 - The budget estimate uses tiktoken `o200k_base`; for Claude / Qwen it can undercount, so actual spend can exceed the limit by the estimation error of the requests in flight. Measured `estimated vs actual` lands in M3's `rag_request_summary`.
+- Through OpenRouter all models share one upstream: an OpenRouter outage fails every remote model at once (each still has its own breaker), and Claude refusals / cache-token counts come through the OpenAI-compatible format, not the native Anthropic one.
 - Streaming answers are checked for citations only after the stream ends (the `done` event); the disclaimer is M3.
 - The Docker image installs without the `[embed]` extra, so `RAG_EMBEDDER=bge-m3` only works for a locally run API; the full-stack image needs a CPU-torch install step.
 - Reranker is a `TODO(M3)` stub.
