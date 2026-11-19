@@ -84,6 +84,7 @@ class RagPipeline:
             routed = await self._router.chat("answer", messages)
             span.set("model_used", routed.model_key)
             span.set("degraded", routed.degraded)
+            span.set("attempts", routed.attempts)
             span.set("prompt_tokens", routed.response.usage.prompt_tokens)
             span.set("completion_tokens", routed.response.usage.completion_tokens)
 

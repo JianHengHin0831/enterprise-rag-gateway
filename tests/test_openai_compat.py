@@ -115,3 +115,14 @@ def test_parse_retry_after():
     assert parse_retry_after("garbage") is None
     future = format_datetime(datetime.now(UTC) + timedelta(seconds=30), usegmt=True)
     assert 25 <= parse_retry_after(future) <= 31
+
+
+async def test_content_filter_finish_reason_is_a_non_retryable_refusal():
+    from app.gateway.base import ContentRefusalError
+
+    payload = {"choices": [{"message": {"content": ""}, "finish_reason": "content_filter"}]}
+    provider, client = _provider(lambda _: httpx.Response(200, json=payload))
+    async with client:
+        with pytest.raises(ContentRefusalError) as info:
+            await provider.chat(MSGS, model="m", max_tokens=8)
+    assert info.value.retryable is False

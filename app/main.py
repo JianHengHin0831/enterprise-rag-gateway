@@ -15,7 +15,7 @@ from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedR
 from redis.asyncio import Redis
 
 from app.config import Settings, get_settings
-from app.gateway.base import LLMError
+from app.gateway.base import AllModelsFailedError, LLMError
 from app.gateway.factory import build_providers
 from app.gateway.router import ModelRouter, load_models_config
 from app.observability.logging import configure_logging, log_event
@@ -185,9 +185,20 @@ async def chat(
     )
     try:
         return await pipeline.answer(body, identity)
+    except AllModelsFailedError as exc:
+        # Retries and the whole fallback chain are exhausted: a transient outage.
+        log_event(logger, "chat_failed", level=logging.ERROR, stage="llm", error=type(exc).__name__)
+        return _error(status.HTTP_503_SERVICE_UNAVAILABLE, "all language models are unavailable")
     except LLMError as exc:
-        # TODO(M2): the router falls back before this can happen.
-        log_event(logger, "chat_failed", level=logging.ERROR, stage="llm", error=str(exc))
+        # Non-retryable (bad request, auth, content refusal): no fallback was attempted.
+        log_event(
+            logger,
+            "chat_failed",
+            level=logging.ERROR,
+            stage="llm",
+            error=type(exc).__name__,
+            status_code=exc.status_code,
+        )
         return _error(status.HTTP_502_BAD_GATEWAY, "the language model call failed")
     except (ResponseHandlingException, UnexpectedResponse, httpx.HTTPError) as exc:
         log_event(logger, "chat_failed", level=logging.ERROR, stage="retrieve", error=str(exc))

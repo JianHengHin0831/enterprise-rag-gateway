@@ -2,48 +2,28 @@
 
 Non-streaming `chat` uses the shared httpx.AsyncClient:
   POST {base_url}/chat/completions -> choices[0].message.content + usage.
-Error mapping: HTTP status via `error_from_status` (with `Retry-After`), timeouts and
-transport failures -> RetryableLLMError, malformed bodies -> NonRetryableLLMError.
+Error mapping: see `app/gateway/providers/_http.py`; `finish_reason == "content_filter"`
+-> ContentRefusalError, malformed bodies -> NonRetryableLLMError.
 
 TODO(M2): implement `stream` (SSE `data:` lines, `[DONE]`, `stream_options.include_usage`).
 """
 
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 
 import httpx
 
 from app.gateway.base import (
     BaseLLMProvider,
     ChatMessage,
+    ContentRefusalError,
     LLMResponse,
     NonRetryableLLMError,
-    RetryableLLMError,
     StreamChunk,
     Usage,
-    error_from_status,
 )
+from app.gateway.providers._http import parse_retry_after, post_json
 
-_MAX_ERROR_BODY = 300
-
-
-def parse_retry_after(value: str | None) -> float | None:
-    """`Retry-After` is either delta-seconds or an HTTP date."""
-    if not value:
-        return None
-    value = value.strip()
-    try:
-        return max(0.0, float(value))
-    except ValueError:
-        pass
-    try:
-        when = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return None
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=UTC)
-    return max(0.0, (when - datetime.now(UTC)).total_seconds())
+__all__ = ["OpenAICompatProvider", "parse_retry_after"]
 
 
 class OpenAICompatProvider(BaseLLMProvider):
@@ -69,33 +49,24 @@ class OpenAICompatProvider(BaseLLMProvider):
             "temperature": temperature,
             "stream": False,
         }
+        data = await post_json(
+            self._client,
+            f"{self._base_url}/chat/completions",
+            provider=self.name,
+            body=body,
+            headers={"Authorization": f"Bearer {self._api_key}"},
+            timeout_s=timeout_s,
+        )
         try:
-            r = await self._client.post(
-                f"{self._base_url}/chat/completions",
-                json=body,
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                timeout=timeout_s,
-            )
-        except httpx.TimeoutException as exc:
-            raise RetryableLLMError(f"{self.name}: timeout after {timeout_s}s") from exc
-        except httpx.TransportError as exc:
-            raise RetryableLLMError(f"{self.name}: {type(exc).__name__}") from exc
-
-        if r.status_code >= 400:
-            # The body may echo our prompt; keep only a short prefix for diagnostics.
-            raise error_from_status(
-                r.status_code,
-                f"{self.name}: HTTP {r.status_code}: {r.text[:_MAX_ERROR_BODY]}",
-                parse_retry_after(r.headers.get("Retry-After")),
-            )
-
-        try:
-            data = r.json()
             choice = data["choices"][0]
             text = choice["message"]["content"] or ""
             usage = data.get("usage") or {}
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            finish_reason = choice.get("finish_reason")
+        except (KeyError, IndexError, TypeError, AttributeError) as exc:
             raise NonRetryableLLMError(f"{self.name}: malformed response") from exc
+
+        if finish_reason == "content_filter":
+            raise ContentRefusalError(f"{self.name}: response blocked by content filter")
 
         return LLMResponse(
             text=text,
@@ -105,7 +76,7 @@ class OpenAICompatProvider(BaseLLMProvider):
                 prompt_tokens=int(usage.get("prompt_tokens") or 0),
                 completion_tokens=int(usage.get("completion_tokens") or 0),
             ),
-            finish_reason=choice.get("finish_reason"),
+            finish_reason=finish_reason,
         )
 
     def stream(

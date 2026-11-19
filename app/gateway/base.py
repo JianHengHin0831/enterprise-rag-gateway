@@ -1,4 +1,19 @@
-"""Provider-agnostic LLM interface and error taxonomy."""
+"""Provider-agnostic LLM interface and error taxonomy.
+
+Error taxonomy (decides what the router does):
+
+| Error                    | Cause                                   | Retry / fallback | Breaker  |
+|--------------------------|-----------------------------------------|------------------|----------|
+| ProviderTimeoutError     | timeout, request deadline               | yes              | failure  |
+| RateLimitedError         | HTTP 429 (honours Retry-After)          | yes              | failure  |
+| RetryableLLMError        | 408/409/5xx/529, connection errors      | yes              | failure  |
+| NonRetryableLLMError     | 400/401/403/404/422, malformed response | no, raise        | untouched|
+| ContentRefusalError      | model or provider content refusal       | no, raise        | untouched|
+| AllModelsFailedError     | router: every model of the chain failed | (final error)    | n/a      |
+
+A non-retryable error is our bug or a policy decision, not a provider outage, so it must not
+open the breaker or burn the fallback chain.
+"""
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -53,8 +68,29 @@ class RateLimitedError(RetryableLLMError):
     pass
 
 
+class ProviderTimeoutError(RetryableLLMError):
+    pass
+
+
 class NonRetryableLLMError(LLMError):
     retryable = False
+
+
+class ContentRefusalError(NonRetryableLLMError):
+    """The model or the provider's content filter declined to answer."""
+
+
+class AllModelsFailedError(RetryableLLMError):
+    """Raised by the router when every model of the chain failed with a retryable error, had
+    its breaker open, or ran out of the request deadline. The caller may retry later."""
+
+    def __init__(self, message: str, *, last_error: LLMError | None = None) -> None:
+        super().__init__(
+            message,
+            status_code=last_error.status_code if last_error else None,
+            retry_after_s=last_error.retry_after_s if last_error else None,
+        )
+        self.last_error = last_error
 
 
 _RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504, 529})

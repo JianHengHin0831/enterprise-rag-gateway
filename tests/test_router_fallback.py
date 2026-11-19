@@ -18,7 +18,6 @@ CONFIG = {
 MSGS = [ChatMessage(role="user", content="hi")]
 
 
-@pytest.mark.skip(reason="M2: ModelRouter.chat not implemented")
 async def test_breaker_opens_after_5_429s_and_6th_call_skips_primary():
     primary = FakeLLM("p1", script=[RateLimitedError("429", status_code=429)] * 10)
     backup = FakeLLM("p2", default="backup answer [1]")
@@ -34,7 +33,6 @@ async def test_breaker_opens_after_5_429s_and_6th_call_skips_primary():
     assert result.degraded and result.response.text == "backup answer [1]"
 
 
-@pytest.mark.skip(reason="M2: ModelRouter.chat not implemented")
 async def test_non_retryable_error_does_not_trip_breaker():
     from app.gateway.base import NonRetryableLLMError
 

@@ -6,6 +6,7 @@ from pydantic import SecretStr
 
 from app.gateway.base import ChatMessage, NonRetryableLLMError, RetryableLLMError
 from app.gateway.factory import api_key_for, build_providers
+from app.gateway.providers.anthropic import AnthropicProvider
 from app.gateway.providers.fake import FakeLLM
 from app.gateway.providers.openai_compat import OpenAICompatProvider
 from app.gateway.providers.template import FALLBACK_TEXT, TemplateProvider
@@ -38,7 +39,8 @@ async def test_build_providers_only_registers_usable_ones(settings, models_confi
     )
     async with httpx.AsyncClient() as http:
         providers = build_providers(models_config, s, http)
-    assert set(providers) == {"dashscope", "local"}  # anthropic adapter is M2
+    assert set(providers) == {"anthropic", "dashscope", "local"}
+    assert isinstance(providers["anthropic"], AnthropicProvider)
     assert isinstance(providers["dashscope"], OpenAICompatProvider)
     assert providers["dashscope"]._base_url == "https://intl.example/v1"
     assert isinstance(providers["local"], TemplateProvider)
@@ -77,10 +79,18 @@ async def test_router_without_any_model_raises(models_config):
         await router.chat("answer", MSGS)
 
 
-async def test_router_m1_propagates_provider_errors(models_config):
-    llm = FakeLLM("dashscope", script=[RetryableLLMError("503", status_code=503)])
+async def test_router_falls_back_to_template_after_retries(models_config):
+    llm = FakeLLM("dashscope", script=[RetryableLLMError("503", status_code=503)] * 3)
+
+    async def no_sleep(_: float) -> None:
+        return None
+
     router = ModelRouter(
-        config=models_config, providers={"dashscope": llm, "local": TemplateProvider()}
+        config=models_config,
+        providers={"dashscope": llm, "local": TemplateProvider()},
+        sleep=no_sleep,
     )
-    with pytest.raises(RetryableLLMError):  # TODO(M2): falls back instead
-        await router.chat("answer", MSGS)
+    result = await router.chat("answer", MSGS)
+    assert llm.calls == ["qwen-plus"] * 3
+    assert result.model_key == "fallback-template" and result.degraded
+    assert result.attempts == 4

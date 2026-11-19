@@ -84,6 +84,13 @@ class CircuitBreaker:
         if self._consecutive_failures >= self._failure_threshold:
             self._trip()
 
+    def release(self) -> None:
+        """Give back a HALF_OPEN probe slot without recording an outcome. Used when an
+        attempt ends with a NON-retryable error or is cancelled: neither says anything about
+        the provider's health, but the reserved slot must not leak."""
+        if self._state is BreakerState.HALF_OPEN and self._half_open_in_flight > 0:
+            self._half_open_in_flight -= 1
+
     def _trip(self) -> None:
         self._state = BreakerState.OPEN
         self._opened_at = self._clock()

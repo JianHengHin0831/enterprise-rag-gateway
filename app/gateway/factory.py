@@ -12,13 +12,17 @@ import httpx
 
 from app.config import Settings
 from app.gateway.base import BaseLLMProvider
+from app.gateway.providers.anthropic import AnthropicProvider
 from app.gateway.providers.openai_compat import OpenAICompatProvider
 from app.gateway.providers.template import TemplateProvider
 from app.observability.logging import log_event
 
 logger = logging.getLogger("rag.gateway")
 
-_IMPLEMENTED_REMOTE = {"openai_compat"}  # TODO(M2): add "anthropic"
+_REMOTE_ADAPTERS: dict[str, type[AnthropicProvider] | type[OpenAICompatProvider]] = {
+    "anthropic": AnthropicProvider,
+    "openai_compat": OpenAICompatProvider,
+}
 
 
 def api_key_for(settings: Settings, env_name: str) -> str | None:
@@ -41,14 +45,15 @@ def build_providers(
         if kind == "template":
             providers[name] = TemplateProvider()
             continue
-        if kind not in _IMPLEMENTED_REMOTE:
+        adapter = _REMOTE_ADAPTERS.get(kind)
+        if adapter is None:
             skipped[name] = "adapter_not_implemented"
             continue
         key = api_key_for(settings, spec.get("api_key_env", ""))
         if key is None:
             skipped[name] = "no_api_key"
             continue
-        providers[name] = OpenAICompatProvider(
+        providers[name] = adapter(
             name=name,
             base_url=settings.provider_base_urls.get(name, spec["base_url"]),
             api_key=key,

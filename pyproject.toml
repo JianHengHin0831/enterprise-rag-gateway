@@ -57,4 +57,4 @@ select = ["E", "F", "I", "B", "UP", "ASYNC", "S", "SIM"]
 ignore = ["S101"]  # assert is fine in tests
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S105", "S106"]  # hard-coded test secrets
+"tests/**" = ["S105", "S106", "S311"]  # hard-coded test secrets, seeded RNGs

@@ -72,3 +72,26 @@ def test_half_open_failure_reopens_and_restarts_timer():
     assert cb.state is BreakerState.OPEN
     clock.t = 61
     assert cb.state is BreakerState.HALF_OPEN
+
+
+def test_release_returns_half_open_probe_slot_without_verdict():
+    clock = Clock()
+    cb = CircuitBreaker(
+        "p:m", failure_threshold=1, recovery_timeout_s=30, half_open_max_calls=1, clock=clock
+    )
+    cb.record_failure()
+    clock.t = 30
+    assert cb.allow_request()
+    assert not cb.allow_request()  # only one probe
+    cb.release()
+    assert cb.state is BreakerState.HALF_OPEN
+    assert cb.allow_request()  # slot is free again
+
+
+def test_release_is_a_no_op_when_closed():
+    cb = make(Clock())
+    for _ in range(4):
+        cb.record_failure()
+    cb.release()
+    cb.record_failure()
+    assert cb.state is BreakerState.OPEN  # release did not reset the failure count

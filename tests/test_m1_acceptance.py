@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
-from app.gateway.base import RetryableLLMError
+from app.gateway.base import NonRetryableLLMError, RetryableLLMError
 from app.gateway.providers.fake import FakeLLM
 from app.gateway.providers.template import TemplateProvider
 from app.gateway.router import ModelRouter, load_models_config
@@ -130,8 +130,19 @@ def test_response_shape(run, make_token):
 
 
 def test_llm_failure_returns_502_with_trace_id(run, make_token):
+    # M2: a retryable 503 now falls back (see test below); a non-retryable error still fails.
     client, _, state = run
-    state["llm"] = FakeLLM("dashscope", script=[RetryableLLMError("503", status_code=503)])
+    state["llm"] = FakeLLM("dashscope", script=[NonRetryableLLMError("401", status_code=401)])
     r = _ask(client, make_token, Role.HR)
     assert r.status_code == 502
     assert r.json()["trace_id"] == r.headers["X-Trace-ID"]
+
+
+def test_retryable_llm_failure_falls_back_to_template(run, make_token):
+    client, _, state = run
+    state["llm"] = FakeLLM("dashscope", script=[RetryableLLMError("503", status_code=503)] * 3)
+    r = _ask(client, make_token, Role.HR)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["model_used"] == "fallback-template" and body["degraded"] is True
+    assert len(state["llm"].calls) == 3  # retry.max_attempts in configs/models.yaml

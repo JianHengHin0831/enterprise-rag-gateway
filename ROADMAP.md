@@ -43,10 +43,10 @@ Goal: ingest docs with `tenant_id / allowed_roles`; `/v1/chat` runs the minimal 
 
 ## M2 · Multi-model gateway + breaker/fallback + budget + cache + SSE (days 4–6)
 
-- [ ] Provider adapters: OpenAI-compatible + Anthropic (separate `system` parameter, different usage field names)
-- [ ] Error taxonomy: retryable (timeout / 429 / 5xx) vs non-retryable (400 / 401 / 403 / content refusal); non-retryable errors do not count toward the breaker
-- [ ] `ModelRouter`: fallback chain from `configs/models.yaml`; exponential backoff + full jitter; honour `Retry-After`; overall deadline
-- [ ] Breakers isolated per `provider:model`; response metadata includes `model_used`, `degraded`
+- [x] Provider adapters: OpenAI-compatible + Anthropic (separate `system` parameter, different usage field names)
+- [x] Error taxonomy: retryable (timeout / 429 / 5xx) vs non-retryable (400 / 401 / 403 / content refusal); non-retryable errors do not count toward the breaker
+- [x] `ModelRouter`: fallback chain from `configs/models.yaml`; exponential backoff + full jitter; honour `Retry-After`; overall deadline
+- [x] Breakers isolated per `provider:model`; response metadata includes `model_used`, `degraded`
 - [ ] **SSE streaming**: retry/fallback before the first token; after it, failures send `event: error` and end
 - [ ] `BudgetGuard`: Redis `budget:{tenant}:{YYYY-MM-DD}` reserve → settle with actual usage; over budget → 429 or downgrade to the small model
 - [ ] L1 `TTLCache(500, 60s)` + L2 Redis (1h); `index_version` stored in Redis, cached briefly in L1
