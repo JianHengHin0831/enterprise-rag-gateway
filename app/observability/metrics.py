@@ -11,6 +11,7 @@ _HELP = {
     "rag_citation_mismatch_total": "Answers whose [n] citations point outside the contexts.",
     "rag_refusals_total": "Refusals by reason (low_score / no_results / model).",
     "rag_rerank_gate_total": "Low-score gate decisions (passed / refused).",
+    "rag_truncated_answers_total": "Answers cut off at the model's output-token limit.",
 }
 
 _lock = threading.Lock()

@@ -342,6 +342,7 @@
       if (data.refused) parts.push(badge("refused", "warn"));
       if (data.degraded) parts.push(badge("degraded (fallback)", "warn"));
       if (data.citation_mismatch) parts.push(badge("citation mismatch", "bad"));
+      if (data.truncated) parts.push(badge("truncated", "warn"));
     }
     if (ttft != null) parts.push(`<span>first token ${ttft} ms</span>`);
     parts.push(`<span>${ms} ms</span>`);

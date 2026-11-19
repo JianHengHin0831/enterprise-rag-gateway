@@ -20,9 +20,14 @@ class FakeLLM(BaseLLMProvider):
     LLMError instance is raised. When the script is exhausted, `default` is returned."""
 
     def __init__(
-        self, name: str = "fake", script: Iterable[Outcome] = (), default: str = "ok [1]"
+        self,
+        name: str = "fake",
+        script: Iterable[Outcome] = (),
+        default: str = "ok [1]",
+        finish_reason: str = "stop",
     ) -> None:
         self.name = name
+        self.finish_reason = finish_reason  # e.g. "length" to simulate a truncated answer
         self._script: deque[Outcome] = deque(script)
         self._default = default
         self.calls: list[str] = []  # model names, in call order
@@ -52,7 +57,7 @@ class FakeLLM(BaseLLMProvider):
                 prompt_tokens=sum(len(m.content) for m in messages) // 2,
                 completion_tokens=len(text) // 2,
             ),
-            finish_reason="stop",
+            finish_reason=self.finish_reason,
         )
 
     async def stream(
@@ -67,4 +72,6 @@ class FakeLLM(BaseLLMProvider):
         text = self._next(model)
         for i in range(0, len(text), 4):
             yield StreamChunk(delta=text[i : i + 4])
-        yield StreamChunk(usage=Usage(completion_tokens=len(text) // 2), finish_reason="stop")
+        yield StreamChunk(
+            usage=Usage(completion_tokens=len(text) // 2), finish_reason=self.finish_reason
+        )

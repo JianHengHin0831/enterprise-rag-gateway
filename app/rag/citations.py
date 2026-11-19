@@ -5,6 +5,11 @@ from dataclasses import dataclass
 
 _CITATION = re.compile(r"\[(\d{1,3})\]")
 
+TRUNCATION_NOTICE = (
+    "\n\n(Note: this answer was cut off because it reached the length limit. "
+    "Ask about one part of the question at a time for the rest.)"
+)
+
 DISCLAIMER = (
     "\n\n(Note: some citation numbers do not match any retrieved source. "
     "Please verify before relying on this answer.)"

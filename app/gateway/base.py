@@ -32,6 +32,15 @@ class Usage(BaseModel):
     completion_tokens: int = 0
 
 
+# Provider finish reasons meaning "stopped at the output-token limit": OpenAI-compatible
+# (incl. OpenRouter) report "length", Anthropic's native API reports "max_tokens".
+TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+
+def is_truncated(finish_reason: str | None) -> bool:
+    return finish_reason in TRUNCATION_FINISH_REASONS
+
+
 class LLMResponse(BaseModel):
     text: str
     model: str

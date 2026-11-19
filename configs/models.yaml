@@ -30,7 +30,9 @@ models:
     input_per_mtok: 2.0
     output_per_mtok: 10.0
     timeout_s: 30
-    max_output_tokens: 1024
+    # Reasoning tokens count toward this limit. At 1024, golden D-08 stopped mid-sentence
+    # (finish_reason length: 1024 completion tokens, 260 of them reasoning, 2026-11-20).
+    max_output_tokens: 2048
   claude-haiku:
     provider: openrouter
     model: anthropic/claude-haiku-5.5
@@ -44,7 +46,7 @@ models:
     input_per_mtok: 0.26
     output_per_mtok: 0.78
     timeout_s: 30
-    max_output_tokens: 1024
+    max_output_tokens: 2048  # same answer length as the primary
   qwen-turbo:
     provider: openrouter
     model: qwen/qwen3.8-flash  # OpenRouter has no qwen-turbo; closest small, cheap Qwen

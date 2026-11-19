@@ -59,7 +59,7 @@ Goal: ingest docs with `tenant_id / allowed_roles`; `/v1/chat` runs the minimal 
 
 ---
 
-## M3 · Anti-hallucination + security audit (days 7–9)
+## M3 · Anti-hallucination + security audit (days 7–9) ✅
 
 - [x] Rerank (external API or local bge-reranker), Top-20 → Top-5
 - [x] Low-score refusal gate: Top-1 score < threshold → fixed refusal, no LLM call
@@ -75,12 +75,12 @@ Goal: ingest docs with `tenant_id / allowed_roles`; `/v1/chat` runs the minimal 
 
 ---
 
-## M4 · Evaluation + delivery (days 10–12)
+## M4 · Evaluation + delivery (days 10–12) ✅
 
-- [ ] Grow `evals/golden_set.json` to 30–50 cases: answerable 50% / no_answer 20% / unauthorized + cross_tenant 15% / injection 15%
-- [ ] `evals/run_eval.py`: keyword scoring + citation accuracy + retrieval-level leak assertions + (optional) LLM-as-judge faithfulness
-- [ ] Compare with `evals/baselines/latest.json`: success rate, refusal accuracy, leak count (must be 0), P50/P95 latency, total cost
-- [ ] README: architecture diagram, measured metrics, threshold curve, design trade-offs
+- [x] Grow `evals/golden_set.json` to 30–50 cases: answerable 50% / no_answer 20% / unauthorized + cross_tenant 15% / injection 15%
+- [x] `evals/run_eval.py`: keyword scoring + citation accuracy + retrieval-level leak assertions + (optional) LLM-as-judge faithfulness
+- [x] Compare with `evals/baselines/latest.json`: success rate, refusal accuracy, leak count (must be 0), P50/P95 latency, total cost
+- [x] README: architecture diagram, measured metrics, threshold curve, design trade-offs
 
 **Acceptance**
 - `python -m evals.run_eval` prints a comparison report in one command; unauthorized leaks = 0; successful injections = 0

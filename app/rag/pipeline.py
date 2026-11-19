@@ -9,6 +9,7 @@ Order (each step inside a `Span`):
   6. budget.reserve(estimate)                     -> 429 / downgrade        (M2)
   7. router.chat / router.open_stream ("answer")                            (M1/M2)
   8. check_citations on the full text -> disclaimer + metric on mismatch   (M3)
+     finish_reason length / max_tokens -> truncation notice + metric, not cached
   9. budget.settle; should_cache -> cache.set                               (M2)
  10. _record (always, in `finally`): audit line + `rag_request_summary`     (M3)
      + optional trace export (LangFuse)
@@ -53,12 +54,12 @@ from app.cache.layered import LayeredCache
 from app.cost.budget import BudgetExceededError, BudgetGuard, Reservation
 from app.cost.pricing import compute_cost_usd
 from app.cost.tokens import estimate_messages_tokens
-from app.gateway.base import ChatMessage, Usage
+from app.gateway.base import ChatMessage, Usage, is_truncated
 from app.gateway.router import ModelRouter, Task
 from app.observability import metrics
 from app.observability.logging import log_event
 from app.observability.trace import Span, SpanRecord, current_spans, current_trace_id, steps_ms
-from app.rag.citations import DISCLAIMER, check_citations
+from app.rag.citations import DISCLAIMER, TRUNCATION_NOTICE, check_citations
 from app.rag.prompts import PromptTemplate
 from app.rag.reranker import Reranker, passes_gate
 from app.rag.rewrite import QueryRewriter, RewriteResult
@@ -172,7 +173,12 @@ class RagPipeline:
                 await self._settle(plan, actual)
 
             response = self._build(
-                plan, routed.response.text, routed.model_key, routed.degraded, usage
+                plan,
+                routed.response.text,
+                routed.model_key,
+                routed.degraded,
+                usage,
+                finish_reason=routed.response.finish_reason,
             )
             await self._store(plan, response)
             plan.final = response
@@ -231,21 +237,33 @@ class RagPipeline:
 
                 parts: list[str] = []
                 usage = Usage()
+                finish_reason: str | None = None
                 async for chunk in routed.chunks:
                     if chunk.delta:
                         parts.append(chunk.delta)
                         yield StreamEvent("delta", {"text": chunk.delta})
                     if chunk.usage is not None:
                         usage = plan.usage = chunk.usage
+                    if chunk.finish_reason:
+                        finish_reason = chunk.finish_reason
                 _llm_span_attrs(span, routed.model_key, routed.degraded, routed.attempts, usage)
 
             await self._settle(plan, usage.prompt_tokens + usage.completion_tokens)
             settled = True
-            response = self._build(plan, "".join(parts), routed.model_key, routed.degraded, usage)
+            response = self._build(
+                plan,
+                "".join(parts),
+                routed.model_key,
+                routed.degraded,
+                usage,
+                finish_reason=finish_reason,
+            )
+            # The deltas are already out; send the notes (same order as `_build`) so the
+            # client's text ends the same way as the `done` answer.
             if response.citation_mismatch:
-                # The deltas are already out; send the disclaimer so the client's text
-                # ends the same way as the `done` answer.
                 yield StreamEvent("delta", {"text": DISCLAIMER})
+            if response.truncated:
+                yield StreamEvent("delta", {"text": TRUNCATION_NOTICE})
             await self._store(plan, response)
             plan.final = response
             yield StreamEvent("done", response.model_dump())
@@ -374,7 +392,14 @@ class RagPipeline:
             await self._cache.set(plan.cache_key, response)
 
     def _build(
-        self, plan: _Plan, text: str, model_key: str, degraded: bool, usage: Usage
+        self,
+        plan: _Plan,
+        text: str,
+        model_key: str,
+        degraded: bool,
+        usage: Usage,
+        *,
+        finish_reason: str | None = None,
     ) -> ChatResponse:
         text = text.strip()
         contexts = plan.contexts
@@ -391,6 +416,7 @@ class RagPipeline:
         ]
         refused = bool(self.refusal_text) and self.refusal_text in text
         mismatch = check.mismatch and not refused
+        truncated = is_truncated(finish_reason) and not refused
         if refused:
             metrics.inc("rag_refusals_total", reason="model")
         if mismatch:
@@ -404,6 +430,19 @@ class RagPipeline:
                 num_contexts=len(contexts),
                 model_used=model_key,
             )
+        if truncated:
+            # Checked after the citation check: the notice has no [n] markers.
+            text += TRUNCATION_NOTICE
+            metrics.inc("rag_truncated_answers_total")
+            log_event(
+                logger,
+                "answer_truncated",
+                level=logging.WARNING,
+                model_used=model_key,
+                finish_reason=finish_reason,
+                completion_tokens=usage.completion_tokens,
+                max_output_tokens=self._router.spec(model_key).max_output_tokens,
+            )
         return ChatResponse(
             trace_id=_tid(),
             answer=text,
@@ -412,6 +451,7 @@ class RagPipeline:
             model_used=model_key,
             degraded=degraded or plan.downgraded,
             citation_mismatch=mismatch,
+            truncated=truncated,
             cost_usd=compute_cost_usd(usage, self._router.spec(model_key)),
         )
 
@@ -448,6 +488,7 @@ class RagPipeline:
                 "retrieved_doc_ids": plan.retrieved_doc_ids,
                 "citations": [c.doc_id for c in response.citations] if response else [],
                 "citation_mismatch": bool(response and response.citation_mismatch),
+                "truncated": bool(response and response.truncated),
                 "prompt_tokens": actual_prompt,
                 "completion_tokens": usage.completion_tokens if usage else None,
                 "estimated_prompt_tokens": estimate,

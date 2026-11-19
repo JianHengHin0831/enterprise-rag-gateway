@@ -56,7 +56,7 @@ def build_cache_key(
 
 
 def should_cache(response: ChatResponse, *, fallback_model_keys: frozenset[str]) -> bool:
-    if response.degraded or response.citation_mismatch:
+    if response.degraded or response.citation_mismatch or response.truncated:
         return False
     if response.model_used in fallback_model_keys:
         return False
