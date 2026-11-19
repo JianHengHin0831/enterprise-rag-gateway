@@ -216,9 +216,9 @@ breaks the ACL on purpose and asserts the eval reports it). The eval uses its ow
 Measured 2026-11-20 on 50 cases (25 answerable / 10 no-answer / 8 unauthorized + cross-tenant /
 7 injection), answers by `claude-sonnet` via OpenRouter, threshold 0.03. Current setup (run 5):
 bge-m3 on CPU, bge-reranker-v2-m3 fp32 on an RTX 3050 Laptop GPU (4 GB), Top-8 contexts.
-The CPU column is the saved baseline `evals/baselines/latest.json` (run 3, Top-5):
+The current column is the saved baseline `evals/baselines/latest.json`; the CPU column is run 3 (Top-5):
 
-| Metric | CPU reranker, Top-5 (baseline) | **GPU reranker, Top-8 (current)** |
+| Metric | CPU reranker, Top-5 (run 3) | **GPU reranker, Top-8 (current baseline)** |
 |---|---|---|
 | **Unauthorized leaks** (retrieved, cited or in the answer) | 0 | **0** (hard gate) |
 | **Cross-tenant leaks** | 0 | **0** (hard gate) |

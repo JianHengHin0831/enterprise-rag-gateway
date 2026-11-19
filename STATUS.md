@@ -110,13 +110,13 @@
     - latency P50 **2.6 s** / P95 **9.3 s** (was 34.4 / 49.0); medians: gate refusal 1.2 s, LLM answer 4.2 s
     - cost 0.281 USD (+23%, longer Top-8 prompts) + 0.181 USD judge
     - still failing: A-06 ("48" not in context), D-08 ("P5" salary band chunk not in context), P-01 (gate, as calibrated), E-04 (model refusal next to the injection doc)
-    - The baseline was not replaced (only on explicit request); the next run should use `--save-baseline` once this setup is the reference.
+    - Saved as the new baseline `evals/baselines/latest.json` (on request, from this run's report, not a re-run; config records embed_device cpu, rerank_device cuda:0, fp32).
 
 ## In progress
 - (none)
 
 ## Next
-- Make the GPU reranker the default for local runs (set `RAG_EMBED_DEVICE=cpu`, `RAG_RERANK_DEVICE=cuda:0` in `.env`) and save run 5's setup as the new baseline.
+- Make the GPU reranker the default for local runs (set `RAG_EMBED_DEVICE=cpu`, `RAG_RERANK_DEVICE=cuda:0` in `.env`); the baseline now assumes it, so a CPU run will show large latency regressions.
 - LangFuse: verified live against Langfuse Cloud (2026-11-20). Traces follow the Langfuse best-practices checklist (typed observations: generation / retriever / guardrail; usage and cost on both LLM calls; user, tags, environment, version on every span; text-free root input/output). Not yet done: `session_id` (the API has no conversation id), time-to-first-token on streamed answers, and opt-in masked query/answer text (deliberately off: query_hash rule).
 
 ## Known gaps
