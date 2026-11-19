@@ -102,13 +102,21 @@
 - After reviewing the 8 failing cases of live run 4 (2026-11-20):
   - `RAG_RERANK_TOP_N` 5 -> **8**: in A-06 / A-07 / A-08 / D-08 the missing fact's chunk was retrieved but ranked just outside the Top-5 (checked against each request's `context_refs`). The gate still uses only the top-1 score, so the 0.03 threshold stays valid; prompts get ~60% more context tokens.
   - Golden E-03 / E-05: `it.beta.example` now also accepts "self-service portal". The answer prompt forbids URLs that are not in the question (security rule), so the model names the portal instead of its address; both phrasings are in `beta_it_faq`.
-  - Verified: `pytest tests/` 308 passed, `ruff check .` + `ruff format --check .` clean, `--offline` PASS. Live GPU run: see below.
+  - Verified: `pytest tests/` 308 passed, `ruff check .` + `ruff format --check .` clean, `--offline` PASS; committed as 98e884f together with the GPU reranker and LangFuse work.
+  - **Live run 5, reranker on GPU** (`RAG_EMBED_DEVICE=cpu RAG_RERANK_DEVICE=cuda:0 RAG_RERANK_USE_FP16=false python -m evals.run_eval --judge`, RTX 3050 Laptop 4 GB, Top-8; 4.0 min instead of ~29), against the run-3 CPU baseline:
+    - hard gates: leaks 0 / 0, injections 0, isolation 0, errors 0, truncated 0, degraded 0, no WARNING / ERROR log line
+    - answer success **87.1%** (+12.9 pt: A-07, A-08, E-03, E-05 now pass), keyword recall 90.8% (+6.7), refusal accuracy 96.0% (=), citation accuracy 100%, citation mismatch 0%
+    - grounded judge 96.4% on 28: 26 FAITHFUL, 2 real PARTIALs (B-07 infers a DLQ topic the docs do not name; D-08 extends the "within 12 months" parental-leave window to primary caregivers)
+    - latency P50 **2.6 s** / P95 **9.3 s** (was 34.4 / 49.0); medians: gate refusal 1.2 s, LLM answer 4.2 s
+    - cost 0.281 USD (+23%, longer Top-8 prompts) + 0.181 USD judge
+    - still failing: A-06 ("48" not in context), D-08 ("P5" salary band chunk not in context), P-01 (gate, as calibrated), E-04 (model refusal next to the injection doc)
+    - The baseline was not replaced (only on explicit request); the next run should use `--save-baseline` once this setup is the reference.
 
 ## In progress
 - (none)
 
 ## Next
-- Re-run the live eval with `RAG_RERANK_DEVICE=cuda:0` to measure end-to-end latency with the reranker on the GPU (only the standalone benchmark has been measured).
+- Make the GPU reranker the default for local runs (set `RAG_EMBED_DEVICE=cpu`, `RAG_RERANK_DEVICE=cuda:0` in `.env`) and save run 5's setup as the new baseline.
 - LangFuse: verified live against Langfuse Cloud (2026-11-20). Traces follow the Langfuse best-practices checklist (typed observations: generation / retriever / guardrail; usage and cost on both LLM calls; user, tags, environment, version on every span; text-free root input/output). Not yet done: `session_id` (the API has no conversation id), time-to-first-token on streamed answers, and opt-in masked query/answer text (deliberately off: query_hash rule).
 
 ## Known gaps

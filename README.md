@@ -214,26 +214,27 @@ breaks the ACL on purpose and asserts the eval reports it). The eval uses its ow
   to 3 pt before a soft REGRESSION flag.
 
 Measured 2026-11-20 on 50 cases (25 answerable / 10 no-answer / 8 unauthorized + cross-tenant /
-7 injection), bge-m3 + bge-reranker-v2-m3 on a laptop CPU, answers by `claude-sonnet` via
-OpenRouter, threshold 0.03. Three live runs; the table is run 1, except the judge row (run 3).
-Run 3 reproduced every quality and safety number of run 1 exactly (latency P50 34.4 s /
-P95 49.0 s) and is the saved baseline `evals/baselines/latest.json`:
+7 injection), answers by `claude-sonnet` via OpenRouter, threshold 0.03. Current setup (run 5):
+bge-m3 on CPU, bge-reranker-v2-m3 fp32 on an RTX 3050 Laptop GPU (4 GB), Top-8 contexts.
+The CPU column is the saved baseline `evals/baselines/latest.json` (run 3, Top-5):
 
-| Metric | Value |
-|---|---|
-| **Unauthorized leaks** (retrieved, cited or in the answer) | **0** (hard gate) |
-| **Cross-tenant leaks** | **0** (hard gate) |
-| **Successful injections** (payload or tag escape in the answer) | **0 / 7** (hard gate) |
-| Cache isolation violations | 0 (cache-group expectations 9/9) |
-| Answer success (not refused + every expected keyword) | 74.2% (23/31) |
-| Keyword recall (should-answer cases) | 84.2% |
-| Refusal accuracy (refused == expected, all cases) | 96.0% (48/50) |
-| Missed refusals / false refusals | 0% / 6.5% (P-01, E-04) |
-| Expected doc retrieved / cited | 100% / 100% |
-| Citation mismatch (invalid `[n]`) | 0% |
-| LLM-as-judge, grounded in the retrieved chunks (v2) | 28/28 answers FAITHFUL (the run printed 96.4%: one verdict misparsed, see below) |
-| Latency P50 / P95 (uncached) | 33.7 s / 44.6 s; gate refusals (no LLM) alone have a 32.3 s median, LLM answers 35.4 s; a cache hit is ~0 s |
-| Cost: 50 cases total / per LLM call | 0.225 USD / ~0.0068 USD over 33 LLM calls (gate refusals and cache hits cost 0) |
+| Metric | CPU reranker, Top-5 (baseline) | **GPU reranker, Top-8 (current)** |
+|---|---|---|
+| **Unauthorized leaks** (retrieved, cited or in the answer) | 0 | **0** (hard gate) |
+| **Cross-tenant leaks** | 0 | **0** (hard gate) |
+| **Successful injections** (payload or tag escape in the answer) | 0 / 7 | **0 / 7** (hard gate) |
+| Cache isolation violations | 0 | 0 (cache-group expectations 9/9) |
+| Answer success (not refused + every expected keyword) | 74.2% (23/31) | **87.1% (27/31)** |
+| Keyword recall (should-answer cases) | 84.2% | 90.8% |
+| Refusal accuracy (refused == expected, all cases) | 96.0% (48/50) | 96.0% (48/50) |
+| Missed refusals / false refusals | 0% / 6.5% (P-01, E-04) | 0% / 6.5% (P-01, E-04) |
+| Expected doc retrieved / cited | 100% / 100% | 100% / 100% |
+| Citation mismatch (invalid `[n]`) / truncated answers | 0% / – | 0% / 0 |
+| Grounded LLM-as-judge (FAITHFUL 1 / PARTIAL 0.5) | 28/28 FAITHFUL (printed 96.4%, parser bug) | 96.4%: 26 FAITHFUL, 2 PARTIAL |
+| Latency P50 / P95 (uncached) | 34.4 s / 49.0 s | **2.8 s / 9.3 s** |
+| Latency medians: gate refusal (no LLM) / LLM answer | ~32 s / ~35 s | 1.2 s / 4.2 s |
+| Cost: 50 cases / per LLM call (33 calls) | 0.228 USD / ~0.0069 USD | 0.281 USD / ~0.0085 USD |
+| Whole eval run | 28.9 min | 4.0 min |
 
 How to read these numbers:
 - **Safety holds by construction, not by luck.** All 7 unauthorized / cross-tenant refusal
@@ -247,25 +248,32 @@ How to read these numbers:
 - **Misses are quality, not safety**: P-01 (false-premise "deploy with Helm") is below the gate
   as the calibration predicted; E-04 ("max single expense") retrieved the right document but
   the model refused, apparently confused by the injected 99999 figure next to the real limit.
-  The keyword misses (A-06/07/08, D-08, E-03/05) are multi-part questions where one part is
-  vague or omitted.
+  On the CPU baseline A-06/07/08 and D-08 missed a fact whose chunk ranked just outside the
+  Top-5 (checked against each request's `context_refs`); Top-8 fixed A-07 and A-08. A-06 ("48")
+  and D-08 ("P5") still miss. E-03/E-05 named the "self-service portal" instead of its address
+  because the answer prompt forbids URLs not in the question; the golden set accepts both.
+- **Top-8 costs ~23% more** (longer prompts) and buys +12.9 pt answer success; refusals and
+  safety are unchanged because the gate uses only the top-1 score.
 - **Why the judge changed.** The v1 judge graded against a one-sentence human reference and
   scored 53.8%: correct extra detail that is in the documents but not in the reference (e.g.
   `ACME-Office`, `FIN-ERR-40`, "notify your mentor") was graded UNFAITHFUL. The v2 judge grades
-  claims against the retrieved chunks and found no unsupported claim in 28 answers, injection
-  cases included. On D-08 it wrote "UNFAITHFUL", reconsidered, and ended with "FAITHFUL"; the
-  parser read the first word, so the saved run says 96.4%. The parser now takes the last verdict
-  line (`parse_verdict`, tested).
+  claims against the retrieved chunks. On the baseline run it found no unsupported claim in 28
+  answers (it wrote "UNFAITHFUL" on D-08, reconsidered and ended with "FAITHFUL"; the parser read
+  the first word, so the saved baseline says 96.4%; it now takes the last verdict line). On the
+  GPU run its two PARTIALs are real overreaches: B-07 infers a DLQ topic the documents do not
+  name, and D-08 applies the "within 12 months" window to both caregiver types although the
+  handbook gives it only for secondary caregivers.
 - **The judge also surfaced a product bug, now fixed.** D-08's answer stopped mid-sentence
   after 212 words: OpenRouter returned `finish_reason: "length"` at exactly 1,024 completion
   tokens, 260 of them Claude's reasoning, and the pipeline served and cached it as complete.
   Now a `length` / `max_tokens` finish sets `truncated=true`, appends a notice, increments
   `rag_truncated_answers_total` and is never cached; the answer route allows 2,048 tokens
   (D-08 then finished at 1,288).
-- **Latency is a hardware number.** Requests refused by the gate never call an LLM yet still
-  take ~32 s: embedding + the cross-encoder over 20 pairs on CPU dominate; a GPU
-  (~0.1 s), a smaller reranker or a hosted rerank API brings an uncached answer to the LLM's
-  ~2-4 s.
+- **Latency is a hardware number.** On CPU, requests refused by the gate never call an LLM yet
+  took ~32 s: the cross-encoder over 20 pairs dominated. With only the reranker on a 4 GB laptop
+  GPU (fp32, same scores as CPU to 1e-6, so the threshold stays valid) a gate refusal takes
+  1.2 s and an answer 4.2 s (median); the LLM is now the largest step. bge-m3 stays on CPU
+  because both models in fp32 do not fit in 4 GB.
 
 ### More trade-offs measured in M4
 
