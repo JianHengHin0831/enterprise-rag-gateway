@@ -133,11 +133,12 @@
 
 - README "Limitations and production path" (2026-11-20): eval data size, document formats, ACL-change propagation, document deletion, per-process breakers, stateless conversations, HS256 identity, abuse limits, query text in app logs, model throughput, semantic cache; each with what it costs and the production path. Linked from the first screen.
 
+- Document deletion fix (2026-11-20): `python -m app.rag.ingest <root> --prune` treats `root` as the complete source for each known tenant directory under it and deletes every point of that tenant the run did not write (removed docs included, even when a tenant has no docs left), then bumps its `index_version` so caches drop the deleted content. Default ingest stays incremental (a subdirectory can be ingested alone). Three tests in `tests/test_ingest.py`: removed doc gone, emptied tenant, and tenants outside the prune scope untouched.
+
 ## In progress
 - (none)
 
 ## Next
-- Document deletion gap: deleting a source file and re-ingesting leaves its chunks retrievable (stale cleanup only covers the docs being ingested). Needs a full-sync delete of doc_ids missing from the source + a test.
 - Make the GPU reranker the default for local runs (set `RAG_EMBED_DEVICE=cpu`, `RAG_RERANK_DEVICE=cuda:0` in `.env`); the baseline now assumes it, so a CPU run will show large latency regressions.
 - LangFuse: verified live against Langfuse Cloud (2026-11-20). Traces follow the Langfuse best-practices checklist (typed observations: generation / retriever / guardrail; usage and cost on both LLM calls; user, tags, environment, version on every span; text-free root input/output). Not yet done: `session_id` (the API has no conversation id), time-to-first-token on streamed answers, and opt-in masked query/answer text (deliberately off: query_hash rule).
 

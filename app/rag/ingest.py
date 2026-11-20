@@ -18,9 +18,14 @@ Pipeline: parse -> chunk -> `screen_text` (mark `suspicious`) -> embed (dense + 
 upsert with a deterministic point id -> delete stale chunks of re-ingested docs ->
 bump `index_version:{tenant_id}` in Redis (last, so caches switch only once data is in place).
 
+By default ingest is incremental: docs missing from `root` are left alone, so a subdirectory
+can be ingested on its own. With `--prune`, `root` is the complete source for every tenant
+directory under it, and chunks of docs that no longer exist there are deleted too.
+
 Usage:
     python -m app.rag.ingest data/mock_docs              # embed + upsert
     python -m app.rag.ingest data/mock_docs --dry-run    # parse/chunk/screen only
+    python -m app.rag.ingest data/mock_docs --prune      # also delete docs removed from root
     python -m app.rag.ingest data/mock_docs --recreate   # drop and rebuild the collection
 """
 
@@ -29,7 +34,7 @@ import asyncio
 import logging
 import re
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -173,6 +178,11 @@ def load_corpus(root: Path, known_tenants: frozenset[str] | None = None) -> list
     return chunks
 
 
+def tenant_dirs(root: Path) -> set[str]:
+    """Tenants that have a directory under `root`: the scope a `--prune` run is complete for."""
+    return {p.name for p in root.iterdir() if p.is_dir()} if root.is_dir() else set()
+
+
 def _batched(items: Sequence[Chunk], size: int) -> Iterator[Sequence[Chunk]]:
     for i in range(0, len(items), size):
         yield items[i : i + size]
@@ -187,13 +197,19 @@ async def upsert(
     collection: str,
     batch_size: int = 32,
     recreate: bool = False,
+    prune_tenants: Collection[str] = (),
 ) -> dict[str, int]:
-    """Embed and upsert chunks; return the new index_version per ingested tenant."""
-    if not chunks:
+    """Embed and upsert chunks; return the new index_version per touched tenant.
+
+    For a tenant in `prune_tenants`, `chunks` is taken as its complete document set: every
+    point of that tenant not written by this run is deleted, including docs removed from the
+    source. Other tenants only lose stale chunks of the docs being re-ingested.
+    """
+    if not chunks and not prune_tenants:
         return {}
     await ensure_collection(client, collection, embedder.dense_dim, recreate=recreate)
 
-    tenants = sorted({c.tenant_id for c in chunks})
+    tenants = sorted({c.tenant_id for c in chunks} | set(prune_tenants))
     versions: dict[str, int] = {}
     for tenant in tenants:
         current = await redis.get(index_version_key(tenant))
@@ -216,26 +232,27 @@ async def upsert(
         ]
         await client.upsert(collection_name=collection, points=points, wait=True)
 
-    # A doc that shrank leaves chunks with the old version behind; drop them.
+    # Points this run did not write carry an older index_version. Without pruning, only those
+    # of re-ingested docs (a doc that shrank) go; with pruning, all of the tenant's go.
     for tenant in tenants:
-        doc_ids = sorted({c.doc_id for c in chunks if c.tenant_id == tenant})
+        must = [models.FieldCondition(key="tenant_id", match=models.MatchValue(value=tenant))]
+        if tenant not in prune_tenants:
+            doc_ids = sorted({c.doc_id for c in chunks if c.tenant_id == tenant})
+            must.append(models.FieldCondition(key="doc_id", match=models.MatchAny(any=doc_ids)))
+        stale = models.Filter(
+            must=must,
+            must_not=[
+                models.FieldCondition(
+                    key="index_version", match=models.MatchValue(value=versions[tenant])
+                )
+            ],
+        )
+        if tenant in prune_tenants:
+            removed = await client.count(collection_name=collection, count_filter=stale, exact=True)
+            log_event(logger, "ingest_pruned", tenant_id=tenant, chunks=removed.count)
         await client.delete(
             collection_name=collection,
-            points_selector=models.FilterSelector(
-                filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="tenant_id", match=models.MatchValue(value=tenant)
-                        ),
-                        models.FieldCondition(key="doc_id", match=models.MatchAny(any=doc_ids)),
-                    ],
-                    must_not=[
-                        models.FieldCondition(
-                            key="index_version", match=models.MatchValue(value=versions[tenant])
-                        )
-                    ],
-                )
-            ),
+            points_selector=models.FilterSelector(filter=stale),
             wait=True,
         )
 
@@ -244,7 +261,7 @@ async def upsert(
     return versions
 
 
-async def _run(root: Path, *, recreate: bool) -> dict[str, int]:
+async def _run(root: Path, *, recreate: bool, prune: bool) -> dict[str, int]:
     settings = get_settings()
     chunks = load_corpus(root, settings.known_tenants)
     client = AsyncQdrantClient(url=settings.qdrant_url)
@@ -258,6 +275,7 @@ async def _run(root: Path, *, recreate: bool) -> dict[str, int]:
             collection=settings.qdrant_collection,
             batch_size=settings.embed_batch_size,
             recreate=recreate,
+            prune_tenants=tenant_dirs(root) & settings.known_tenants if prune else (),
         )
     finally:
         await client.close()
@@ -268,6 +286,11 @@ def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="python -m app.rag.ingest")
     parser.add_argument("root", nargs="?", default="data/mock_docs", type=Path)
     parser.add_argument("--dry-run", action="store_true", help="parse, chunk and screen only")
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="treat root as complete per tenant directory: delete docs no longer in it",
+    )
     parser.add_argument("--recreate", action="store_true", help="drop and recreate the collection")
     args = parser.parse_args(argv[1:])
 
@@ -283,7 +306,7 @@ def main(argv: list[str]) -> None:
         return
 
     print(f"embedding with '{settings.embedder}' and upserting into '{settings.qdrant_collection}'")
-    versions = asyncio.run(_run(args.root, recreate=args.recreate))
+    versions = asyncio.run(_run(args.root, recreate=args.recreate, prune=args.prune))
     log_event(
         logger,
         "ingest_complete",

@@ -9,7 +9,7 @@ from qdrant_client import AsyncQdrantClient, models
 
 from app.cache.keys import index_version_key
 from app.rag.embeddings import FakeEmbedder
-from app.rag.ingest import Chunk, load_corpus, upsert
+from app.rag.ingest import Chunk, load_corpus, tenant_dirs, upsert
 from app.rag.store import (
     DENSE_VECTOR,
     PAYLOAD_INDEXES,
@@ -192,6 +192,91 @@ async def test_reingest_removes_stale_chunks_of_shrunk_doc(qdrant, redis, tmp_pa
     after = await _all_points(qdrant)
     assert [p.payload["doc_id"] for p in after].count("doc") == 1
     assert any(p.payload["doc_id"] == "other" for p in after)
+
+
+async def test_prune_deletes_docs_removed_from_source(qdrant, redis, tmp_path):
+    for tenant, doc_id, access in [
+        ("acme_corp", "keep", "all"),
+        ("acme_corp", "gone", "hr"),
+        ("beta_inc", "beta_doc", "all"),
+    ]:
+        _write_doc(
+            tmp_path,
+            f"{tenant}/{access}/{doc_id}.md",
+            doc_id=doc_id,
+            tenant=tenant,
+            roles=f"[{access}]",
+            body=f"Body of {doc_id}.",
+        )
+    kwargs = {
+        "client": qdrant,
+        "embedder": FakeEmbedder(),
+        "redis": redis,
+        "collection": COLLECTION,
+    }
+    await upsert(load_corpus(tmp_path), **kwargs)
+
+    # Delete one acme doc; re-ingest everything, pruning acme only.
+    (tmp_path / "acme_corp" / "hr" / "gone.md").unlink()
+    versions = await upsert(
+        load_corpus(tmp_path), **kwargs, prune_tenants=tenant_dirs(tmp_path) - {"beta_inc"}
+    )
+    docs = {(p.payload["tenant_id"], p.payload["doc_id"]) for p in await _all_points(qdrant)}
+    assert docs == {("acme_corp", "keep"), ("beta_inc", "beta_doc")}
+    # Caches of the pruned tenant are invalidated.
+    assert int(await redis.get(index_version_key("acme_corp"))) == versions["acme_corp"] == 2
+
+
+async def test_prune_tenant_with_no_docs_left_empties_it(qdrant, redis, tmp_path):
+    path = _write_doc(
+        tmp_path,
+        "acme_corp/all/only.md",
+        doc_id="only",
+        tenant="acme_corp",
+        roles="[all]",
+        body="The only doc.",
+    )
+    kwargs = {
+        "client": qdrant,
+        "embedder": FakeEmbedder(),
+        "redis": redis,
+        "collection": COLLECTION,
+    }
+    await upsert(load_corpus(tmp_path), **kwargs)
+    path.unlink()
+    assert tenant_dirs(tmp_path) == {"acme_corp"}
+
+    versions = await upsert(load_corpus(tmp_path), **kwargs, prune_tenants={"acme_corp"})
+    assert await _all_points(qdrant) == []
+    assert versions == {"acme_corp": 2}
+
+
+async def test_prune_never_touches_tenants_outside_its_scope(qdrant, redis, tmp_path):
+    for tenant in ("acme_corp", "beta_inc"):
+        _write_doc(
+            tmp_path,
+            f"{tenant}/all/{tenant}_doc.md",
+            doc_id=f"{tenant}_doc",
+            tenant=tenant,
+            roles="[all]",
+            body="Body.",
+        )
+    kwargs = {
+        "client": qdrant,
+        "embedder": FakeEmbedder(),
+        "redis": redis,
+        "collection": COLLECTION,
+    }
+    await upsert(load_corpus(tmp_path), **kwargs)
+
+    # Ingest only acme's directory with pruning: beta's points and version stay as they were.
+    versions = await upsert(
+        load_corpus(tmp_path / "acme_corp"), **kwargs, prune_tenants={"acme_corp"}
+    )
+    tenants = sorted(p.payload["tenant_id"] for p in await _all_points(qdrant))
+    assert tenants == ["acme_corp", "beta_inc"]
+    assert "beta_inc" not in versions
+    assert int(await redis.get(index_version_key("beta_inc"))) == 1
 
 
 async def test_ensure_collection_creates_acl_payload_indexes(qdrant, monkeypatch):

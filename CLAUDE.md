@@ -13,7 +13,7 @@ Local Python is 3.11+ (Docker image uses 3.12). Windows venv paths shown; on Lin
 - Full stack: `docker compose up --build`
 - Run API: `.venv/Scripts/uvicorn app.main:app --reload --port 8000`
 - Mint a dev JWT: `.venv/Scripts/python -m scripts.mint_token --tenant acme_corp --role hr --user u_hr_01`
-- Ingest mock docs: `.venv/Scripts/python -m app.rag.ingest data/mock_docs`
+- Ingest mock docs: `.venv/Scripts/python -m app.rag.ingest data/mock_docs` (`--prune` also deletes docs removed from the source)
 - Tests: `.venv/Scripts/pytest tests/ -v`
 - RAG eval: `.venv/Scripts/python -m evals.run_eval` (`--dry-run` validates the golden set only)
 - Retrieval ablation (no LLM): `.venv/Scripts/python -m evals.ablation [--top-n 3]` (`--offline` = fakes)
