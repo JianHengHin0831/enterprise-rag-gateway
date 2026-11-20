@@ -116,6 +116,7 @@
   - `test` job, Python 3.11 and 3.12: `ruff check`, `ruff format --check`, `evals.run_eval --dry-run`, `pytest tests/`, `evals.run_eval --offline` (hard gates). Installs `.[dev]` only: no torch, no model download, no network LLM, no secrets.
   - `docker` job: builds the image (no push), GitHub Actions layer cache.
   - Verified locally on a clean `git archive` copy without `.env`: lint and format clean, 308 passed, offline eval PASS. First GitHub run on `main` green (2026-11-20); status badge added to the README.
+- README first screen rewritten (2026-11-20): one-line pitch, `docs/img/demo_acl.png` (live console, same question: `hr` gets a cited answer in 3.4 s, `intern` is refused in 1.5 s at $0), a results-at-a-glance table from `evals/baselines/latest.json`, and four "worth a look" pointers into the code. Demo console now renders `**bold**` (after HTML escaping). `.claude/launch.json` gained an `api-gpu` config (reranker on `cuda:0`, as in the baseline) so demos do not need `.env` changes.
 
 ## In progress
 - (none)

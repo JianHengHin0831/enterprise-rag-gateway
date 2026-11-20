@@ -6,6 +6,17 @@
       "runtimeExecutable": ".venv/Scripts/uvicorn.exe",
       "runtimeArgs": ["app.main:app", "--reload", "--port", "8000"],
       "port": 8000
+    },
+    {
+      "name": "api-gpu",
+      "runtimeExecutable": ".venv/Scripts/uvicorn.exe",
+      "runtimeArgs": ["app.main:app", "--port", "8000"],
+      "port": 8000,
+      "env": {
+        "RAG_EMBED_DEVICE": "cpu",
+        "RAG_RERANK_DEVICE": "cuda:0",
+        "RAG_RERANK_USE_FP16": "false"
+      }
     }
   ]
 }

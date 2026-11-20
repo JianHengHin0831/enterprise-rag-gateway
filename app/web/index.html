@@ -325,8 +325,12 @@
   function scrollDown() { const t = $("thread"); t.scrollTop = t.scrollHeight; }
 
   function renderAnswer(text) {
-    // Escape first, then highlight [n] citation markers.
-    return esc(text).replace(/\[(\d+)\]/g, '<span class="cite-ref">[$1]</span>');
+    // Escape first, then render **bold** and highlight [n] citation markers. Only these two
+    // patterns become markup, and they run on already-escaped text, so model output cannot
+    // inject HTML.
+    return esc(text)
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\[(\d+)\]/g, '<span class="cite-ref">[$1]</span>');
   }
 
   function badge(text, cls = "") { return `<span class="badge ${cls}">${esc(text)}</span>`; }

@@ -2,11 +2,35 @@
 
 [![CI](https://github.com/JianHengHin0831/enterprise-rag-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/JianHengHin0831/enterprise-rag-gateway/actions/workflows/ci.yml)
 
-An internal knowledge-base QA gateway: **multi-tenancy + role-based isolation + LLM gateway resilience + anti-hallucination loop + cost control + end-to-end observability**.
+**A knowledge-base QA gateway where the same question gets a different answer depending on who asks, and never a leaked one.**
+Multi-tenant, role-isolated RAG behind an LLM gateway with circuit breaking and fallback, anti-hallucination gates, a token budget, layered caching, tracing, and a golden-set eval that fails the build on any leak.
 
-It simulates the HR / engineering / sales / finance / company-wide document libraries of two fictional companies: two tenants (`acme_corp`, `beta_inc`) and six roles (`intern`, `employee`, `eng`, `hr`, `sales`, `finance`).
+![Same question, two roles: HR gets a cited answer, an intern is refused before any LLM call](docs/img/demo_acl.png)
 
-> Status: M0–M4 done; measured results in [Metrics](#metrics-m4). See [ROADMAP.md](ROADMAP.md) / [STATUS.md](STATUS.md).
+<sub>Live demo console (`/ui/`), same tenant, same question. **Top:** `hr` gets the figure with a citation to the confidential compensation doc (3.4 s, $0.0054). **Bottom:** `intern` is refused in 1.5 s at $0. The doc was never retrieved, because the ACL filter runs inside the Qdrant query, so no LLM was called.</sub>
+
+### Results at a glance
+
+50-case golden set, run end to end through `/v1/chat` ([details](#metrics-m4)):
+
+| Safety (hard gates: any non-zero fails CI) | | Quality and cost | |
+|---|---|---|---|
+| Unauthorized-role leaks | **0** | Answer success (answerable cases) | **87.1%** |
+| Cross-tenant leaks | **0** | Refusal accuracy | 96.0% |
+| Successful prompt injections | **0 / 7** | Citation accuracy / invalid `[n]` | 100% / 0% |
+| Cache isolation violations | **0** | Grounded LLM-as-judge faithfulness | 96.4% |
+| HTTP errors, degraded or truncated answers | **0** | Latency P50 / P95 (uncached) | 2.8 s / 9.3 s |
+
+Cost is about $0.0085 per answered question, and $0 for gate refusals. Latency was measured with the reranker on a 4 GB laptop GPU.
+
+### What is worth a look
+
+- **Access control is enforced in the vector query, not after it.** `tenant_id` and `role` come only from a verified JWT and become a Qdrant filter on *every* hybrid prefetch. A post-filter would let unauthorized chunks into memory and push authorized ones out of the Top-K. → [`app/security/acl.py`](app/security/acl.py), [`app/rag/retriever.py`](app/rag/retriever.py)
+- **Gateway resilience, with streaming kept honest.** It classifies errors as retryable or not, keeps a three-state breaker per `provider:model`, retries with backoff, jitter and an overall deadline, and walks a fallback chain. Fallback happens **only before the first streamed token**, never mid-answer. → [`app/gateway/router.py`](app/gateway/router.py)
+- **The answer is refused rather than guessed.** Low-relevance retrieval returns a fixed refusal before any LLM call. A threshold calibrated on the golden set sets the cutoff ([curve](#refusal-threshold-calibration-m3)). Citations are mandatory and range-checked.
+- **The eval cannot vouch for itself.** Leaks are judged against document visibility computed from the source files, not the gateway's own ACL. Retrieval is checked through the audit log, so a broken filter cannot hide its own leak.
+
+> Status: milestones M0–M4 done ([ROADMAP.md](ROADMAP.md), [STATUS.md](STATUS.md)). It simulates two fictional companies (`acme_corp`, `beta_inc`) with six roles (`intern`, `employee`, `eng`, `hr`, `sales`, `finance`) across HR, engineering, sales, finance and company-wide documents.
 
 ---
 
