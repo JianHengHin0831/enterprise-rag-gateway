@@ -7,3 +7,6 @@ __pycache__/
 .ruff_cache/
 logs/
 evals/reports/
+
+# Hallmark design-skill working files (lint records, screenshots)
+.hallmark/
