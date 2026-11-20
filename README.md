@@ -306,6 +306,55 @@ How to read these numbers:
   1.2 s and an answer 4.2 s (median); the LLM is now the largest step. bge-m3 stays on CPU
   because both models in fp32 do not fit in 4 GB.
 
+### Retrieval ablation: what dense, sparse, RRF and rerank each buy
+
+`python -m evals.ablation [--top-n N]` runs every golden case through six configurations,
+with the same ACL filter on every query. Each query embeds once with bge-m3 and pulls a Top-20
+candidate pool with dense only, sparse only, or hybrid RRF. The pool is cut to the Top-N
+context either directly or after bge-reranker-v2-m3. No LLM is called, so it costs $0.
+
+- *Fact coverage* is the share of expected answer keywords that appear in the context the
+  model would see. A fact missing from the context cannot be in a grounded answer, so this is
+  the ceiling on answer success.
+- *All facts* is the share of cases where every keyword is present.
+- *Gate* columns ask whether the configuration's top-1 score can drive the refusal gate. AUC
+  measures should-answer vs should-refuse separation over all 50 cases. Accuracy is the best
+  threshold that still passes ≥95% of answerable questions.
+
+| Config | Fact coverage, Top-8 (prod) | All facts, Top-8 | Fact coverage, Top-3 | All facts, Top-3 | Gate AUC | Gate accuracy |
+|---|---|---|---|---|---|---|
+| dense | 94.0% | 86.2% | 89.1% | 79.3% | 0.881 | 84% |
+| sparse | 94.9% | 86.2% | 90.9% | 79.3% | 0.779 | 76% |
+| hybrid (RRF) | 95.1% | 86.2% | **92.6%** | 82.8% | 0.839 | 78% |
+| dense + rerank | 97.4% | 93.1% | 92.2% | 82.8% | 0.912 | 92% |
+| sparse + rerank | 97.4% | 93.1% | 92.2% | 82.8% | 0.919 | 94% |
+| **hybrid + rerank (prod)** | **97.4%** | **93.1%** | 92.2% | 82.8% | 0.912 | 92% |
+
+<sub>29 answerable cases with checkable facts (calculation cases excluded), 50 cases for the
+gate. The expected *document* is in the Top-8 for every configuration (100% doc recall), so
+the table measures whether the right *chunks* get in.</sub>
+
+What the numbers say:
+
+- **The reranker is the component that earns its place.** In the production Top-8 context it
+  lifts "every fact present" from 86% to 93%. More importantly, it is the only usable refusal
+  signal. An RRF score depends only on the ranks in the two lists, not on how relevant the hits
+  are. A top-1 score therefore takes a few near-identical values for any question, and a
+  gate on it reaches only 78%. Cosine similarity is uncalibrated and
+  reaches 84%. The cross-encoder reaches 92%, at the 95% answer-recall floor that the
+  production gate uses.
+- **Hybrid helps only when the context is tight, and only a little on this corpus.** At Top-3
+  without rerank, RRF puts the most facts in context (92.6% vs 89.1% dense, 90.9% sparse). At
+  Top-8, or after reranking, the three pools are equivalent. The corpus is the reason: 169
+  chunks, and one identity sees only a few dozen, so a Top-20 pool already holds most of
+  them. Hybrid stays because it is free here (one bge-m3 call returns both vectors). Sparse
+  also covers exact identifiers such as error codes, policy IDs and level names, and dense
+  recall on those degrades as a corpus grows. This corpus is too small to show that, and the
+  [limitations](#limitations-and-production-path) section says so.
+- **The verdict is honest, not tuned.** "dense + rerank" matches production here. A larger
+  corpus with many near-duplicate chunks is where the hybrid pool should pull ahead, and it is
+  the first thing to re-measure on real data.
+
 ### More trade-offs measured in M4
 
 - **Why drive the eval through HTTP instead of calling retrieval directly?** Leaks usually come

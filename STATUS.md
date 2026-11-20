@@ -118,6 +118,11 @@
   - Verified locally on a clean `git archive` copy without `.env`: lint and format clean, 308 passed, offline eval PASS. First GitHub run on `main` green (2026-11-20); status badge added to the README.
 - README first screen rewritten (2026-11-20): one-line pitch, `docs/img/demo_acl.png` (live console, same question: `hr` gets a cited answer in 3.4 s, `intern` is refused in 1.5 s at $0), a results-at-a-glance table from `evals/baselines/latest.json`, and four "worth a look" pointers into the code. Demo console now renders `**bold**` (after HTML escaping). `.claude/launch.json` gained an `api-gpu` config (reranker on `cuda:0`, as in the baseline) so demos do not need `.env` changes.
 
+- Retrieval ablation (2026-11-20): `evals/ablation.py` (+ `tests/test_ablation.py`, 7 tests). Six configs: dense / sparse / hybrid RRF pools (Top-20, ACL on every query), with and without bge-reranker, cut to Top-N. Context metrics: doc recall, MRR, fact coverage (expected keywords present in context), all-facts rate; gate metrics: top-1 score ROC AUC and best gate accuracy at >= 95% answer recall. No LLM calls.
+  - Live, GPU reranker, Top-8 (production): every config 100% doc recall; all-facts 86.2% without rerank vs 93.1% with it; gate accuracy RRF 78%, dense cosine 84%, cross-encoder 92%.
+  - Top-3: hybrid RRF puts the most facts in context without rerank (92.6% vs 89.1% dense, 90.9% sparse); after rerank all pools tie (92.2%).
+  - Honest finding: on 169 chunks, hybrid vs dense is a small, Top-3-only gain and "dense + rerank" matches production; the reranker is what earns its place (facts in context + the only calibrated refusal signal). README "Retrieval ablation" section. A Top-1 run was stopped to free the GPU (not needed for the conclusions).
+
 ## In progress
 - (none)
 
