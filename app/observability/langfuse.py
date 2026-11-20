@@ -11,8 +11,10 @@ following https://langfuse.com/docs/observability/best-practices:
   is a guardrail) and a stable verb-first display name (`OBSERVATION_NAMES`);
 - trace-level attributes (user, tags, environment, version) are repeated on every span so
   Langfuse can filter and aggregate observations by them;
-- the root observation's input/output is a structured, text-free view of the request
-  (query_hash, turns, decision, citations, ...) so a reviewer can read a trace at a glance;
+- every observation's input/output is a structured, text-free view so a reviewer can read a
+  trace at a glance: the root shows query_hash, turns, decision and chunk-level citations
+  (`doc_id#chunk_index`); each step shows its key attributes (`STEP_IO`), e.g. the rerank
+  gate's passed / top_score / threshold / context_refs;
 - non-ok steps are marked with a level and a status message.
 Only the already-sanitized summary and span attributes are sent: no query text, no answer
 text, no document text (the audit log's query_hash rule applies here too).
@@ -58,6 +60,16 @@ OBSERVATION_NAMES = {
     "rerank": "rerank-and-gate",
     "budget": "reserve-token-budget",
     "llm": "generate-answer",
+}
+# Pipeline span name -> (input keys, output keys): span attrs shown as the observation's
+# Input / Output so each step reads at a glance (all attrs also stay in metadata for filters).
+STEP_IO: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "rewrite": (("turns",), ("rewritten", "fallback", "error_type")),
+    "cache_lookup": ((), ("hit",)),
+    "retrieve": (("top_k",), ("hits", "retrieved_doc_ids", "suspicious_hits")),
+    "rerank": (("reranker", "candidates"), ("passed", "top_score", "threshold", "context_refs")),
+    "budget": ((), ("estimated_tokens", "accepted", "downgraded")),
+    "llm": (("task", "contexts"), ("degraded", "attempts", "prompt_tokens", "completion_tokens")),
 }
 # Summary keys shown as the root observation's input / output (never raw text).
 _ROOT_INPUT_KEYS = ("query_hash", "turns", "stream")
@@ -136,7 +148,11 @@ def build_otlp_payload(
         **trace_attrs,
         **{f"langfuse.trace.metadata.{k}": v for k, v in trace_meta.items()},
         "langfuse.observation.input": {k: summary.get(k) for k in _ROOT_INPUT_KEYS},
-        "langfuse.observation.output": {k: summary.get(k) for k in _ROOT_OUTPUT_KEYS},
+        "langfuse.observation.output": {
+            **{k: summary.get(k) for k in _ROOT_OUTPUT_KEYS},
+            # Chunk-level refs (`doc_id#chunk_index`) when known; doc ids otherwise.
+            "citations": summary.get("cited_refs", summary.get("citations")),
+        },
     }
     if error_type:
         root_attrs["langfuse.observation.level"] = "ERROR"
@@ -163,6 +179,14 @@ def build_otlp_payload(
             "langfuse.observation.type": obs_type,
             **{f"langfuse.observation.metadata.{k}": v for k, v in attrs.items()},
         }
+        in_keys, out_keys = STEP_IO.get(record.name, ((), ()))
+        for attr_key, keys in (
+            ("langfuse.observation.input", in_keys),
+            ("langfuse.observation.output", out_keys),
+        ):
+            view = {k: attrs[k] for k in keys if attrs.get(k) is not None}
+            if view:
+                span_attrs[attr_key] = view
         if obs_type == "generation":
             span_attrs.update(
                 {

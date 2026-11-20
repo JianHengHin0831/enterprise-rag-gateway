@@ -489,6 +489,9 @@ class RagPipeline:
                 "downgraded": plan.downgraded,
                 "retrieved_doc_ids": plan.retrieved_doc_ids,
                 "citations": [c.doc_id for c in response.citations] if response else [],
+                "cited_refs": (
+                    [f"{c.doc_id}#{c.chunk_index}" for c in response.citations] if response else []
+                ),
                 "citation_mismatch": bool(response and response.citation_mismatch),
                 "truncated": bool(response and response.truncated),
                 "prompt_tokens": actual_prompt,

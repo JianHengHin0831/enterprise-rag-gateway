@@ -311,6 +311,8 @@ async def test_exporter_receives_summary_and_spans(build, hr):
     )
     [(summary, spans)] = exporter.calls
     assert summary["decision"] == "answered"
+    assert summary["cited_refs"] and all("#" in ref for ref in summary["cited_refs"])
+    assert [ref.split("#")[0] for ref in summary["cited_refs"]] == summary["citations"]
     assert [s.name for s in spans] == [s.name for s in current_spans()]
 
 
@@ -363,8 +365,25 @@ def test_otlp_payload_follows_langfuse_best_practices():
                 "cost_usd": 0.0001,
             },
         ),
-        SpanRecord(name="retrieve", start_ts=1000.1, latency_ms=20, attrs={"hits": 3}),
-        SpanRecord(name="rerank", start_ts=1000.2, latency_ms=10, attrs={"passed": False}),
+        SpanRecord(
+            name="retrieve",
+            start_ts=1000.1,
+            latency_ms=20,
+            attrs={"top_k": 20, "hits": 3, "retrieved_doc_ids": ["acme_handbook"]},
+        ),
+        SpanRecord(
+            name="rerank",
+            start_ts=1000.2,
+            latency_ms=10,
+            attrs={
+                "reranker": "fake",
+                "candidates": 3,
+                "passed": False,
+                "top_score": 0.01,
+                "threshold": 0.03,
+                "context_refs": ["acme_handbook#4"],
+            },
+        ),
         SpanRecord(name="budget", start_ts=1000.3, latency_ms=1, status="error"),
         SpanRecord(
             name="llm",
@@ -380,6 +399,8 @@ def test_otlp_payload_follows_langfuse_best_practices():
         "query_hash": hash_query(secret_query),
         "turns": 2,
         "decision": "answered",
+        "citations": ["acme_handbook"],
+        "cited_refs": ["acme_handbook#4"],
         "cost_usd": 0.002,
         "total_ms": 1400.0,
     }
@@ -417,7 +438,24 @@ def test_otlp_payload_follows_langfuse_best_practices():
     root = by_name["rag_request"]
     root_input = json.loads(root["langfuse.observation.input"]["stringValue"])
     assert root_input == {"query_hash": hash_query(secret_query), "turns": 2, "stream": None}
-    assert json.loads(root["langfuse.observation.output"]["stringValue"])["decision"] == "answered"
+    root_output = json.loads(root["langfuse.observation.output"]["stringValue"])
+    assert root_output["decision"] == "answered"
+    assert root_output["citations"] == ["acme_handbook#4"]  # chunk-level, not doc-level
+
+    # Each step shows its key attributes as Input / Output, not only in metadata.
+    def io(name: str, key: str) -> dict:
+        return json.loads(by_name[name][f"langfuse.observation.{key}"]["stringValue"])
+
+    assert io("retrieve-context", "input") == {"top_k": 20}
+    assert io("retrieve-context", "output") == {"hits": 3, "retrieved_doc_ids": ["acme_handbook"]}
+    assert io("rerank-and-gate", "input") == {"reranker": "fake", "candidates": 3}
+    assert io("rerank-and-gate", "output") == {
+        "passed": False,
+        "top_score": 0.01,
+        "threshold": 0.03,
+        "context_refs": ["acme_handbook#4"],
+    }
+    assert "langfuse.observation.input" not in by_name["reserve-token-budget"]  # no attrs
     rewrite, llm = by_name["rewrite-query"], by_name["generate-answer"]
     assert rewrite["langfuse.observation.model.name"] == {"stringValue": "claude-haiku"}
     assert rewrite["gen_ai.usage.output_tokens"] == {"intValue": "9"}
