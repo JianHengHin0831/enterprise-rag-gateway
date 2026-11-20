@@ -7,7 +7,7 @@ Multi-tenant, role-isolated RAG behind an LLM gateway with circuit breaking and 
 
 ![Same question, two roles: HR gets a cited answer, an intern is refused before any LLM call](docs/img/demo_acl.png)
 
-<sub>Live demo console (`/ui/`), same tenant, same question. **Top:** `hr` gets the figure with a citation to the confidential compensation doc (3.4 s, $0.0054). **Bottom:** `intern` is refused in 1.5 s at $0. The doc was never retrieved, because the ACL filter runs inside the Qdrant query, so no LLM was called.</sub>
+<sub>Live demo console (`/ui/`), same tenant, same question. **Top:** `hr` gets the figure with a citation to the confidential compensation doc (5.1 s, $0.0054). **Bottom:** `intern` is refused in 4.0 s at $0. The doc was never retrieved, because the ACL filter runs inside the Qdrant query, so no LLM was called.</sub>
 
 ### Results at a glance
 
