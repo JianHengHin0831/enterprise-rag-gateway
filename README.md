@@ -30,7 +30,7 @@ Cost is about $0.0085 per answered question, and $0 for gate refusals. Latency w
 - **The answer is refused rather than guessed.** Low-relevance retrieval returns a fixed refusal before any LLM call. A threshold calibrated on the golden set sets the cutoff ([curve](#refusal-threshold-calibration-m3)). Citations are mandatory and range-checked.
 - **The eval cannot vouch for itself.** Leaks are judged against document visibility computed from the source files, not the gateway's own ACL. Retrieval is checked through the audit log, so a broken filter cannot hide its own leak.
 
-> Status: milestones M0–M4 done ([ROADMAP.md](ROADMAP.md), [STATUS.md](STATUS.md)). It simulates two fictional companies (`acme_corp`, `beta_inc`) with six roles (`intern`, `employee`, `eng`, `hr`, `sales`, `finance`) across HR, engineering, sales, finance and company-wide documents.
+> Status: milestones M0–M4 done ([ROADMAP.md](ROADMAP.md), [STATUS.md](STATUS.md)). Known gaps and what production would do instead: [Limitations and production path](#limitations-and-production-path). It simulates two fictional companies (`acme_corp`, `beta_inc`) with six roles (`intern`, `employee`, `eng`, `hr`, `sales`, `finance`) across HR, engineering, sales, finance and company-wide documents.
 
 ---
 
@@ -405,3 +405,24 @@ What the numbers say:
   missed an exact keyword, and tripped the original -3 pt flag. Two fixes: keywords accept
   alternatives / regexes, and the answer-success tolerance is 6.5 pt (two cases). Soft flags
   mean "look at the per-case diff", not "block the release".
+
+---
+
+## Limitations and production path
+
+This is a demo-scale system with production-shaped boundaries. These are the known gaps, what
+each one costs, and what a production deployment would do instead.
+
+| Area | Today | Why it matters | Production path |
+|---|---|---|---|
+| **Evaluation data** | 50 hand-written golden cases on 17 synthetic docs (169 chunks) | Small samples swing: one case is 3.2 points of answer success. The [ablation](#retrieval-ablation-what-dense-sparse-rrf-and-rerank-each-buy) hits a ceiling, so hybrid vs dense is not settled here. | Sample real (anonymised) queries from logs into the golden set, label them with domain owners, keep a fixed regression subset in CI and a growing one for releases. Re-run the threshold sweep and the ablation on the real corpus. |
+| **Document formats** | Markdown with front matter (`tenant_id`, `allowed_roles`) | PDFs, scanned files and tables are most of a real knowledge base. Bad table chunking silently drops the numbers people ask about. | A parsing stage (layout-aware PDF parser, OCR, table-to-text) before chunking. ACL metadata comes from the source system (SharePoint, Confluence, Drive permissions), not from front matter. |
+| **ACL changes** | Re-ingesting a doc rewrites its chunks' payload, deletes stale chunks and bumps `index_version:{tenant}`. Retrieval sees the new ACL at once, and cached answers stop matching within `index_version_cache_ttl_s` (5 s). | The window is bounded and short. Removing a role is safe because the ACL filter runs at query time. | Drive re-ingest from permission-change events (webhooks or CDC) rather than batch runs. Alert on ingest lag. |
+| **Document deletion** | Deleting a source file and re-ingesting does **not** delete its chunks. Stale cleanup only covers the docs being ingested; only `--recreate` clears them. | A deleted (e.g. retracted or confidential) document stays retrievable. | Full-sync ingest that deletes doc_ids missing from the source, or explicit tombstones from the source system, plus a test for it. |
+| **Breaker state** | Per worker process (in memory) | With N workers a failing provider absorbs up to N × the failure threshold before every worker trips. Each breaker still protects its own worker. | Keep local breakers (no new dependency on the hot path) and share an advisory "open" flag in Redis with a short TTL. Or move routing into a dedicated LLM proxy tier. |
+| **Conversations** | Stateless: the client sends `history` (up to 20 turns), and the server rewrites the follow-up into a standalone query. No `session_id`. | The server cannot audit or trace a conversation as a unit, and LangFuse cannot group turns. | Server-side conversation store keyed by `session_id` (bound to the JWT `sub`), with history loaded server-side so clients cannot forge it. Pass `session_id` through to tracing. |
+| **Identity** | HS256 JWTs minted by a script (`scripts/mint_token.py`, dev-only `/dev/token`) | A shared secret means anyone holding it can mint any role. | RS256/ES256 tokens from the company IdP, verified against its JWKS (with key rotation). Roles mapped from IdP groups. `/dev/token` stays disabled outside `RAG_ENV=dev`. |
+| **Abuse limits** | Per-tenant daily token budget only | One user can exhaust the tenant's budget, and there is no request-rate limit. | Per-user and per-tenant rate limits at the edge (API gateway or Redis token bucket), plus per-user budget shares. |
+| **Logging of queries** | Audit log and LangFuse store `query_hash` only. The app log's `chat_request` event carries the query text after PII masking. | Masking is pattern-based, so free text can still contain sensitive content that patterns miss. | Log the query hash only by default. Raw text goes to a separate, access-controlled, short-retention store when debugging needs it. |
+| **Throughput** | One process holds the embedder and the reranker, one batch at a time ([load numbers](#load-and-concurrency)) | Uncached requests queue behind the models, about 0.5 req/s per worker on a laptop GPU. | Serve models from a batching inference server (e.g. TEI or Triton) on a shared GPU, scale API workers separately, batch or sample trace export. |
+| **Semantic cache** | Exact-match cache only (normalised query + tenant + role + versions) | Paraphrases miss the cache. | Deliberately not added: a similarity hit can return one role's answer to a near-identical question from another role, unless the key still binds tenant and role and the threshold is conservative. Only worth it with measured hit-rate gains. |

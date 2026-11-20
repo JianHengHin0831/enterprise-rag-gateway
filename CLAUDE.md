@@ -16,6 +16,8 @@ Local Python is 3.11+ (Docker image uses 3.12). Windows venv paths shown; on Lin
 - Ingest mock docs: `.venv/Scripts/python -m app.rag.ingest data/mock_docs`
 - Tests: `.venv/Scripts/pytest tests/ -v`
 - RAG eval: `.venv/Scripts/python -m evals.run_eval` (`--dry-run` validates the golden set only)
+- Retrieval ablation (no LLM): `.venv/Scripts/python -m evals.ablation [--top-n 3]` (`--offline` = fakes)
+- Load / budget race (no LLM): `.venv/Scripts/python -m scripts.loadtest --url http://localhost:8002` (start the `api-bench` launch config first)
 - Lint / format: `.venv/Scripts/ruff check . && .venv/Scripts/ruff format .`
 
 ## Architecture Boundaries (CRITICAL — never violate)
