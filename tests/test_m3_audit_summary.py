@@ -10,6 +10,7 @@ import httpx
 import pytest
 from fakeredis import FakeAsyncRedis
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from app.cache.keys import index_version_key
 from app.cache.layered import LayeredCache
@@ -510,8 +511,19 @@ async def test_langfuse_export_failure_is_swallowed():
 
 def test_exporter_is_off_without_both_keys(settings):
     assert build_exporter(settings, httpx.AsyncClient()) is None
-    half = settings.model_copy(update={"langfuse_public_key": "pk"})
+    half = settings.model_copy(update={"langfuse_public_key": SecretStr("pk")})
     assert build_exporter(half, httpx.AsyncClient()) is None
+
+
+def test_exporter_treats_blank_keys_as_unset(settings):
+    blank = settings.model_copy(
+        update={"langfuse_public_key": SecretStr("  "), "langfuse_secret_key": SecretStr("sk")}
+    )
+    assert build_exporter(blank, httpx.AsyncClient()) is None
+    both = settings.model_copy(
+        update={"langfuse_public_key": SecretStr("pk"), "langfuse_secret_key": SecretStr("sk")}
+    )
+    assert build_exporter(both, httpx.AsyncClient()) is not None
 
 
 # ---------- HTTP route writes the audit log configured in settings ----------

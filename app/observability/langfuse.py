@@ -290,13 +290,20 @@ class LangfuseExporter:
 
 
 def build_exporter(settings: Settings, http: httpx.AsyncClient) -> LangfuseExporter | None:
-    if settings.langfuse_public_key is None or settings.langfuse_secret_key is None:
+    # A blank key counts as unset (like provider API keys), so `RAG_LANGFUSE_PUBLIC_KEY=` in
+    # the environment turns export off instead of sending every trace with empty credentials.
+    keys = [
+        k.get_secret_value().strip() if k is not None else ""
+        for k in (settings.langfuse_public_key, settings.langfuse_secret_key)
+    ]
+    if not all(keys):
         return None
+    public_key, secret_key = keys
     return LangfuseExporter(
         http,
         host=settings.langfuse_host,
-        public_key=settings.langfuse_public_key.get_secret_value(),
-        secret_key=settings.langfuse_secret_key.get_secret_value(),
+        public_key=public_key,
+        secret_key=secret_key,
         environment=langfuse_environment(settings.env),
         # Prompt versions change answers; compare traces across them in Langfuse.
         version=(

@@ -355,6 +355,43 @@ What the numbers say:
   corpus with many near-duplicate chunks is where the hybrid pool should pull ahead, and it is
   the first thing to re-measure on real data.
 
+### Load and concurrency
+
+`python -m scripts.loadtest` (`--only cache|hit|refusal|budget`) makes no LLM calls and costs
+$0. It ran against a single uvicorn worker on a Windows laptop (Python 3.11, no uvloop), with
+the reranker on an RTX 3050 4 GB and LangFuse export off (the `api-bench` launch config).
+
+| Path | Concurrency | Throughput | P50 | P95 |
+|---|---|---|---|---|
+| `LayeredCache.get`: L1 hit (in-process) | 1 | 227k/s | 0.004 ms | 0.005 ms |
+| `LayeredCache.get`: L2 hit (Redis + JSON decode) | 1 | 2.4k/s | 0.37 ms | 0.66 ms |
+| HTTP `/v1/chat`, answer served from L1 | 1 / 20 / 50 | 174 / 165 / 148 req/s | 5.1 / 90 / 318 ms | 9 / 299 / 450 ms |
+| HTTP `/v1/chat`, gate refusal (embed + retrieve + rerank, no LLM) | 1 / 4 | 0.5 / 0.6 req/s | 1.9 / 7.1 s | 2.0 / 7.1 s |
+
+| Budget pattern, 8 OS processes x 50 requests on real Redis, limit = 100 requests | Served | Overshoot |
+|---|---|---|
+| Naive check-then-spend (50 ms "LLM call" between check and spend) | 123–130 | **+23% to +30%** |
+| `BudgetGuard` atomic reserve → settle | 100 | **0%** |
+
+What the numbers say:
+
+- **The budget design holds across processes, not just across coroutines.** The naive pattern
+  lets every request that checked before the others spent go through. Reserving with an
+  atomic `INCRBY` before the call closes that window.
+- **Cached answers are bound by the web stack, not the cache.** An L1 hit takes microseconds,
+  and the gateway's own work on a hit (JWT verification, query screening, cache key, audit
+  record, logs) is about 1.3 ms in a profile. About 0.9 ms of that is structured JSON logging
+  with PII masking. The rest of the ~5 ms is uvicorn/Starlette on one Windows event loop, so
+  throughput is flat with concurrency and grows with workers.
+- **Uncached throughput is bound by the models.** About 0.2 s goes to embedding (CPU) plus
+  retrieval, and about 1.5 s to the cross-encoder on GPU. Each model serves one batch at a
+  time, so concurrency only adds queueing (P50 1.9 s → 7.1 s at 4 concurrent). Answered
+  questions add the LLM (median ~4 s in the eval), which is bound by provider rate limits.
+- **LangFuse export showed up in the first load run.** With it on, 2,000 cached hits at
+  concurrency 20 ran at 82 req/s instead of 165. Export is a background task per request, so
+  it never blocks a request, but under load it competes for the event loop and the shared
+  HTTP pool. In production, batch it in a span processor or sample it.
+
 ### More trade-offs measured in M4
 
 - **Why drive the eval through HTTP instead of calling retrieval directly?** Leaks usually come

@@ -123,6 +123,14 @@
   - Top-3: hybrid RRF puts the most facts in context without rerank (92.6% vs 89.1% dense, 90.9% sparse); after rerank all pools tie (92.2%).
   - Honest finding: on 169 chunks, hybrid vs dense is a small, Top-3-only gain and "dense + rerank" matches production; the reranker is what earns its place (facts in context + the only calibrated refusal signal). README "Retrieval ablation" section. A Top-1 run was stopped to free the GPU (not needed for the conclusions).
 
+- Load and concurrency (2026-11-20): `scripts/loadtest.py` (cache micro-benchmark, HTTP cache-hit and gate-refusal scenarios, multi-process budget race on real Redis; no LLM calls). README "Load and concurrency" section.
+  - Budget race, 8 processes x 50 requests, limit 100 requests: naive check-then-spend served 123-130 (+23-30%), `BudgetGuard` exactly 100 (0%).
+  - Cache: L1 get 0.004 ms, L2 get 0.37 ms. HTTP L1-hit ~165 req/s on one Windows worker (5 ms P50 at concurrency 1); the gateway's own work is ~1.3 ms per hit (profiled), ~0.9 ms of it JSON logging + PII masking.
+  - Gate refusal (embed CPU + retrieve + rerank GPU): ~0.5 req/s, 1.9 s P50; concurrency only queues (models serve one batch at a time).
+  - LangFuse export halved cache-hit throughput under load (82 vs 165 req/s): background task per request competes for the loop. Blank `RAG_LANGFUSE_*_KEY` now means "off" (was: exporter on with empty credentials); test added. `.claude/launch.json` `api-bench` config (port 8002, LangFuse off, no access log).
+  - Note: the first load run (LangFuse on) sent ~2,200 text-free traces to the Langfuse Cloud project.
+  - GPU caveat: fp32 bge-reranker (~2.3 GB) + desktop apps nearly fill the 4 GB card; once a rerank took 7.5 s instead of 1.5 s until the server was restarted.
+
 ## In progress
 - (none)
 

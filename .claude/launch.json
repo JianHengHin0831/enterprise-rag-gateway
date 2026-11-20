@@ -17,6 +17,19 @@
         "RAG_RERANK_DEVICE": "cuda:0",
         "RAG_RERANK_USE_FP16": "false"
       }
+    },
+    {
+      "name": "api-bench",
+      "runtimeExecutable": ".venv/Scripts/uvicorn.exe",
+      "runtimeArgs": ["app.main:app", "--port", "8002", "--no-access-log"],
+      "port": 8002,
+      "env": {
+        "RAG_EMBED_DEVICE": "cpu",
+        "RAG_RERANK_DEVICE": "cuda:0",
+        "RAG_RERANK_USE_FP16": "false",
+        "RAG_LANGFUSE_PUBLIC_KEY": "",
+        "RAG_LANGFUSE_SECRET_KEY": ""
+      }
     }
   ]
 }
