@@ -112,6 +112,11 @@
     - still failing: A-06 ("48" not in context), D-08 ("P5" salary band chunk not in context), P-01 (gate, as calibrated), E-04 (model refusal next to the injection doc)
     - Saved as the new baseline `evals/baselines/latest.json` (on request, from this run's report, not a re-run; config records embed_device cpu, rerank_device cuda:0, fp32).
 
+- CI (2026-11-20): `.github/workflows/ci.yml` on push to main, pull requests and manual dispatch.
+  - `test` job, Python 3.11 and 3.12: `ruff check`, `ruff format --check`, `evals.run_eval --dry-run`, `pytest tests/`, `evals.run_eval --offline` (hard gates). Installs `.[dev]` only: no torch, no model download, no network LLM, no secrets.
+  - `docker` job: builds the image (no push), GitHub Actions layer cache.
+  - Verified locally on a clean `git archive` copy without `.env`: lint and format clean, 308 passed, offline eval PASS. Not yet run on GitHub (the repository has no remote yet); add the status badge to the README once it does.
+
 ## In progress
 - (none)
 

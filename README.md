@@ -95,6 +95,11 @@ curl -s localhost:8000/v1/chat -H "Authorization: Bearer $TOKEN" \
 
 Start the whole stack: `docker compose up --build`
 
+CI (`.github/workflows/ci.yml`) runs on every pull request and push to `main`: ruff lint and
+format, golden-set validation, the full test suite on Python 3.11 and 3.12, the offline
+golden-set eval with its hard gates (no leaks, no successful injections, no isolation
+violations), and a Docker image build. It needs no secrets, models or network LLM calls.
+
 ---
 
 ## Layout
