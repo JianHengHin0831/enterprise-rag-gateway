@@ -115,7 +115,7 @@
 - CI (2026-11-20): `.github/workflows/ci.yml` on push to main, pull requests and manual dispatch.
   - `test` job, Python 3.11 and 3.12: `ruff check`, `ruff format --check`, `evals.run_eval --dry-run`, `pytest tests/`, `evals.run_eval --offline` (hard gates). Installs `.[dev]` only: no torch, no model download, no network LLM, no secrets.
   - `docker` job: builds the image (no push), GitHub Actions layer cache.
-  - Verified locally on a clean `git archive` copy without `.env`: lint and format clean, 308 passed, offline eval PASS. Not yet run on GitHub (the repository has no remote yet); add the status badge to the README once it does.
+  - Verified locally on a clean `git archive` copy without `.env`: lint and format clean, 308 passed, offline eval PASS. First GitHub run on `main` green (2026-11-20); status badge added to the README.
 
 ## In progress
 - (none)

@@ -1,5 +1,7 @@
 # Enterprise RAG Gateway
 
+[![CI](https://github.com/JianHengHin0831/enterprise-rag-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/JianHengHin0831/enterprise-rag-gateway/actions/workflows/ci.yml)
+
 An internal knowledge-base QA gateway: **multi-tenancy + role-based isolation + LLM gateway resilience + anti-hallucination loop + cost control + end-to-end observability**.
 
 It simulates the HR / engineering / sales / finance / company-wide document libraries of two fictional companies: two tenants (`acme_corp`, `beta_inc`) and six roles (`intern`, `employee`, `eng`, `hr`, `sales`, `finance`).
